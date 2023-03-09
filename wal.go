@@ -149,6 +149,8 @@ func (w *WAL) applySegment() error {
 }
 
 func (w *WAL) releaseSegment(index int) {
+	seg := w.segments[index]
+
 	// remove the segment from the list of segments
 	w.segments = append(w.segments[:index], w.segments[index+1:]...)
 
@@ -156,6 +158,8 @@ func (w *WAL) releaseSegment(index int) {
 	if w.current == w.segments[index] {
 		w.current = nil
 	}
+
+	_ = seg.safelyRemove()
 }
 
 func (w *WAL) Close() error {
@@ -276,13 +280,7 @@ func (w *WAL) TruncateBefore(offset int64) error {
 
 		// mark the segment.Truncated the max offset in segment,
 		// so that the segment can be released when the WAL is flushed
-		if s.Index == seg.Index {
-			s.Truncated = offset
-		} else {
-			s.Truncated = s.End
-		}
-
-		if err = s.sync(); err != nil {
+		if err = s.truncate(offset); err != nil {
 			return err
 		}
 	}

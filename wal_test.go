@@ -1,51 +1,207 @@
-package wal_test
+package wal
 
 import (
+	"os"
 	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/suite"
-
-	"github.com/yeqown/go-wal"
 )
+
+const __testSuiteWALRoot = "./testdata/wal2"
 
 type testSuiteWAL struct {
 	suite.Suite
-
-	WAL *wal.WAL
 }
 
-func (t *testSuiteWAL) SetupSuite() {
-	var err error
-	t.WAL, err = wal.NewWAL(
-		wal.DefaultConfig(),
-		wal.WithRoot("./testdata/wal"),
-		wal.WithMaxSegments(1024),
-	)
-	t.Require().NoError(err)
+var getEntry = func(i int) Entry {
+	return Entry("hello world " + strconv.Itoa(i))
 }
 
-func (t *testSuiteWAL) TearDownSuite() {
-	t.Require().NoError(t.WAL.Close())
+func (t *testSuiteWAL) SetupTest() {
+}
+
+func (t *testSuiteWAL) TearDownTest() {
+	_ = os.RemoveAll(__testSuiteWALRoot)
 }
 
 func (t *testSuiteWAL) Test_WAL_WriteRead() {
-	getEntry := func(i int) wal.Entry {
-		return wal.Entry("hello world " + strconv.Itoa(i))
-	}
+	wal, err := NewWAL(
+		DefaultConfig(),
+		WithRoot(__testSuiteWALRoot),
+		WithMaxSegments(10),
+		WithMaxSegmentSize(1024),
+	)
+	t.Require().NoError(err)
 
 	// write
 	for i := 0; i < 100; i++ {
-		offset, err := t.WAL.Write(getEntry(i))
+		offset, err := wal.Write(getEntry(i))
 		t.Require().NoError(err)
 		t.Require().Equal(int64(i+1), offset)
 	}
 
 	// read
 	for i := 0; i < 100; i++ {
-		b, err := t.WAL.Read(int64(i + 1))
+		b, err := wal.Read(int64(i + 1))
 		t.Require().NoError(err)
 		t.Require().Equal(getEntry(i), b)
+	}
+}
+
+func (t *testSuiteWAL) Test_WAL_Restore() {
+	wal, err := NewWAL(
+		DefaultConfig(),
+		WithRoot(__testSuiteWALRoot),
+		WithMaxSegments(10),
+		WithMaxSegmentSize(1024),
+	)
+	t.Require().NoError(err)
+
+	// write
+	for i := 0; i < 100; i++ {
+		offset, err := wal.Write(getEntry(i))
+		t.Require().NoError(err)
+		t.Require().Equal(int64(i+1), offset)
+	}
+
+	err = wal.Close()
+	t.Require().NoError(err)
+
+	wal2, err2 := NewWAL(
+		DefaultConfig(),
+		WithRoot(__testSuiteWALRoot),
+		WithMaxSegments(10),
+		WithMaxSegmentSize(1024),
+	)
+	t.Require().NoError(err2)
+
+	// read
+	for i := 0; i < 100; i++ {
+		b, err := wal2.Read(int64(i + 1))
+		t.Require().NoError(err)
+		t.Require().Equal(getEntry(i), b)
+	}
+}
+
+func (t *testSuiteWAL) Test_WAL_TruncateBefore() {
+	wal, err := NewWAL(
+		DefaultConfig(),
+		WithRoot(__testSuiteWALRoot),
+		WithMaxSegments(10),
+		WithMaxSegmentSize(1024),
+	)
+	t.Require().NoError(err)
+
+	// write
+	for i := 0; i < 100; i++ {
+		offset, err := wal.Write(getEntry(i))
+		t.Require().NoError(err)
+		t.Require().Equal(int64(i+1), offset)
+	}
+
+	// truncate before
+	err = wal.TruncateBefore(50)
+	t.Require().NoError(err)
+
+	// read
+	for i := 0; i < 100; i++ {
+		b, err := wal.Read(int64(i + 1))
+		if i < 49 {
+			t.Require().Error(err)
+			t.Require().Equal(ErrEntryNotFound, err)
+		} else {
+			t.Require().NoError(err)
+			t.Require().Equal(getEntry(i), b)
+		}
+	}
+}
+
+func (t *testSuiteWAL) Test_WAL_TruncateBefore_Restore() {
+	wal, err := NewWAL(
+		DefaultConfig(),
+		WithRoot(__testSuiteWALRoot),
+		WithMaxSegments(10),
+		WithMaxSegmentSize(1024),
+	)
+	t.Require().NoError(err)
+
+	// write
+	for i := 0; i < 100; i++ {
+		offset, err := wal.Write(getEntry(i))
+		t.Require().NoError(err)
+		t.Require().Equal(int64(i+1), offset)
+	}
+
+	// truncate after
+	err = wal.TruncateBefore(50)
+	t.Require().NoError(err)
+	err = wal.Close()
+	t.Require().NoError(err)
+
+	wal2, err2 := NewWAL(
+		DefaultConfig(),
+		WithRoot(__testSuiteWALRoot),
+		WithMaxSegments(10),
+		WithMaxSegmentSize(1024),
+	)
+	t.Require().NoError(err2)
+
+	// read
+	for i := 0; i < 100; i++ {
+		b, err := wal2.Read(int64(i + 1))
+		if i < 49 {
+			t.Require().Error(err)
+			t.Require().Equal(ErrEntryNotFound, err)
+		} else {
+			t.Require().NoError(err)
+			t.Require().Equal(getEntry(i), b)
+		}
+	}
+}
+
+func (t *testSuiteWAL) Test_WAL_OverThan_MaxSegments() {
+	wal, err := NewWAL(
+		DefaultConfig(),
+		WithRoot(__testSuiteWALRoot),
+		WithMaxSegments(10),
+		WithMaxSegmentSize(1024),
+	)
+	t.Require().NoError(err)
+
+	// write over than 10 * 1024B
+	for i := 0; i < 10000; i++ {
+		offset, err := wal.Write(getEntry(i))
+		t.Require().NoError(err)
+		t.Require().Equal(int64(i+1), offset)
+	}
+
+	// check segments
+	t.Equal(wal.MaxSegments, len(wal.segments))
+	// the first segment CANNOT start from 1
+	t.NotEqual(int64(1), wal.segments[0].Start)
+	// the last segment MUST end with 10000
+	t.Equal(int64(10000), wal.segments[len(wal.segments)-1].End)
+	// sum of all segment buf size MUST be less than 10 * 1024B
+	var sum int64
+	for _, s := range wal.segments {
+		sum += int64(s.size())
+	}
+	t.Less(sum, int64(wal.MaxSegments)*wal.MaxSegmentSize)
+
+	// read not removed entry MUST return getEntry(i)
+	oldest := wal.segments[0].Start
+	newest := wal.segments[len(wal.segments)-1].End
+	// read removed entry MUST return ErrEntryNotFound
+	for i := int64(1); i < oldest; i++ {
+		_, err := wal.Read(i)
+		t.Require().Error(err)
+		t.Require().Equal(ErrEntryNotFound, err)
+	}
+	for i := oldest; i <= newest; i++ {
+		b, err := wal.Read(i)
+		t.Require().NoError(err)
+		t.Require().Equal(getEntry(int(i-1)), b)
 	}
 }
 

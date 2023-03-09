@@ -5,7 +5,9 @@
 // Similar to the https://github.com/tidwall/wal package, but with a few differences.
 package wal
 
-import "errors"
+import (
+	"errors"
+)
 
 var (
 	// ErrSegmentNotFound is returned when a segment is not found.
@@ -13,4 +15,10 @@ var (
 
 	// ErrSegmentCorrupted is returned when a segment is corrupted.
 	ErrSegmentCorrupted = errors.New("segment corrupted")
+
+	// ErrSegmentInvalidOffset is returned when a segment is invalid offset.
+	ErrSegmentInvalidOffset = errors.New("segment invalid offset")
+
+	// ErrEntryNotFound is returned when a entry is not found.
+	ErrEntryNotFound = errors.New("entry not found")
 )

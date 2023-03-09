@@ -71,14 +71,6 @@ func (w *WAL) restore() error {
 		if err != nil {
 			return err
 		}
-
-		// create a new segment file, and set it as the current segment
-		err = w.applySegment()
-		if err != nil {
-			return err
-		}
-
-		return nil
 	}
 
 	// exists the root directory, restore the WAL from the underlying files
@@ -105,6 +97,12 @@ func (w *WAL) restore() error {
 		w.segments = append(w.segments, seg)
 	}
 
+	// if there is no segment file, create a new segment
+	if len(w.segments) == 0 {
+		// create a new segment file, and set it as the current segment
+		return w.applySegment()
+	}
+
 	// sort the segments by Index
 	sort.Slice(w.segments, func(i, j int) bool {
 		return w.segments[i].Index < w.segments[j].Index
@@ -112,7 +110,6 @@ func (w *WAL) restore() error {
 	// set the current segment
 	w.current = w.segments[len(w.segments)-1]
 	w.currentSegmentIdx = w.current.Index
-
 	w.entryOffset = w.current.End
 
 	// if the maximum number of segments is reached, release the oldest seg
@@ -168,13 +165,13 @@ func (w *WAL) Close() error {
 		return err
 	}
 
-	// close all segments
-	for _, seg := range w.segments {
-		err := seg.sync()
-		if err != nil {
-			return err
-		}
-	}
+	// TODO: close all segments
+	//for _, seg := range w.segments {
+	//	err := seg.close()
+	//	if err != nil {
+	//		return err
+	//	}
+	//}
 
 	return nil
 }
@@ -222,18 +219,23 @@ func (w *WAL) Write(entry Entry) (offset int64, err error) {
 
 func (w *WAL) locateSegment(offset int64) (*segment, error) {
 	// locate the segment that contains the entry, binary search
+	//segIdx := sort.Search(len(w.segments), func(i int) bool {
+	//	return w.segments[i].Start > offset
+	//})
+
+	// locate the segment that contains the entry, binary search
 	segIdx := sort.Search(len(w.segments), func(i int) bool {
-		return w.segments[i].End >= offset && w.segments[i].Start <= offset
+		return w.segments[i].End >= offset
 	})
-	if segIdx >= len(w.segments) || segIdx < 0 {
-		return nil, ErrSegmentNotFound
-	}
-	seg := w.segments[segIdx]
-	if seg == nil {
-		return nil, ErrSegmentNotFound
+
+	if segIdx < len(w.segments) {
+		seg := w.segments[segIdx]
+		if seg.Start <= offset && offset <= seg.End {
+			return seg, nil
+		}
 	}
 
-	return seg, nil
+	return nil, ErrSegmentNotFound
 }
 
 func (w *WAL) Read(offset int64) (entry Entry, err error) {
@@ -243,12 +245,17 @@ func (w *WAL) Read(offset int64) (entry Entry, err error) {
 
 	seg, err := w.locateSegment(offset)
 	if err != nil {
+		if errors.Is(err, ErrSegmentNotFound) {
+			return nil, ErrEntryNotFound
+		}
 		return nil, err
 	}
 
 	// read the entry from the segment
-	entry, err = seg.read(offset)
-	if err != nil {
+	if entry, err = seg.read(offset); err != nil {
+		if errors.Is(err, ErrSegmentInvalidOffset) {
+			return nil, ErrEntryNotFound
+		}
 		return nil, err
 	}
 

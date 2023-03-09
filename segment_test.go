@@ -8,6 +8,8 @@ import (
 	"github.com/stretchr/testify/suite"
 )
 
+const __segmentTestSuiteRoot = "./testdata/wal"
+
 type segmentTestSuite struct {
 	suite.Suite
 
@@ -15,18 +17,18 @@ type segmentTestSuite struct {
 }
 
 func (s *segmentTestSuite) SetupTest() {
-	s.root = "./testdata/wal"
+	s.root = __segmentTestSuiteRoot
 	err := os.MkdirAll(s.root, 0755)
 	s.NoError(err)
 }
 
 func (s *segmentTestSuite) TearDownTest() {
-	err := os.RemoveAll("./testdata/wal")
+	err := os.RemoveAll(__segmentTestSuiteRoot)
 	s.NoError(err)
 }
 
 func (s *segmentTestSuite) TestSegment_newSegment() {
-	seg, err := newSegment("./testdata/wal", 1, 1)
+	seg, err := newSegment(__segmentTestSuiteRoot, 1, 1)
 	s.NoError(err)
 
 	s.Equal(uint32(1), seg.Index)
@@ -40,7 +42,7 @@ func (s *segmentTestSuite) TestSegment_newSegment() {
 }
 
 func (s *segmentTestSuite) TestSegment_write_read() {
-	seg, err := newSegment("./testdata/wal", 1, 1)
+	seg, err := newSegment(__segmentTestSuiteRoot, 1, 1)
 	s.NoError(err)
 
 	// write

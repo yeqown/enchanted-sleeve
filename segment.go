@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/pkg/errors"
 )
 
 const (
@@ -142,6 +144,7 @@ func (s *segment) sync() error {
 			s.Start = s.End
 			return s.safelyRemove()
 		}
+
 		// partially truncated, we need to truncate the segment files
 		// DOESN'T include the truncated entry.
 		posIdx := s.Truncated - s.Start
@@ -150,10 +153,17 @@ func (s *segment) sync() error {
 			fmt.Println(errmsg)
 			return fmt.Errorf(errmsg)
 		}
+
 		pos := s.entryPos[posIdx]
 		s.buf = s.buf[pos.offset:]
+
 		// reset the entry positions
 		s.entryPos = s.entryPos[posIdx:]
+		for idx, p := range s.entryPos {
+			s.entryPos[idx].offset = p.offset - pos.offset
+			s.entryPos[idx].end = p.end - pos.offset
+		}
+
 		// reset segment meta (start, truncated)
 		s.Start = s.Truncated
 		entryChanged = true
@@ -258,7 +268,8 @@ func (s *segment) flushMeta() error {
 
 func (s *segment) read(offset int64) (entry Entry, err error) {
 	if offset < s.Start || offset > s.End {
-		return nil, fmt.Errorf("invalid offset: %d", offset)
+		return nil, errors.Wrapf(ErrSegmentInvalidOffset,
+			"offset(%d) not in range(%d, %d)", offset, s.Start, s.End)
 	}
 
 	posIdx := offset - s.Start
@@ -386,7 +397,7 @@ func readSegment(root string, name string) (*segment, error) {
 		}
 
 		// read the entry length
-		entryLen := binary.BigEndian.Uint16(data)
+		entryLen := binary.BigEndian.Uint16(data[offset:])
 		next := offset + int(entryLen) + __EntryLenSize
 		if next > n {
 			panic("invalid entry, data mess")

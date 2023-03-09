@@ -32,7 +32,7 @@ func (s *segmentTestSuite) TestSegment_newSegment() {
 	s.Equal(uint32(1), seg.Index)
 	s.Equal(int64(1), seg.Start)
 	s.Equal(int64(0), seg.End)
-	s.Equal(int64(0), seg.Truncated)
+	s.Equal(int64(-1), seg.Truncated)
 	s.Equal("testdata/wal/0000000001.wal", seg.entryFilename)
 	s.Equal("testdata/wal/0000000001.wal.meta", seg.metaFilename)
 	s.NotNil(seg.entry)
@@ -48,7 +48,7 @@ func (s *segmentTestSuite) TestSegment_write_read() {
 	s.NoError(err)
 	s.Equal(int64(1), seg.Start)
 	s.Equal(int64(1), seg.End)
-	s.Equal(int64(0), seg.Truncated)
+	s.Equal(int64(-1), seg.Truncated)
 	s.Equal(1, len(seg.entryPos))
 
 	// read
@@ -70,7 +70,7 @@ func (s *segmentTestSuite) TestSegment_sync_readSegment() {
 	s.Equal(uint32(1), seg.Index)
 	s.Equal(int64(1), seg.Start)
 	s.Equal(int64(10), seg.End)
-	s.Equal(int64(0), seg.Truncated)
+	s.Equal(int64(-1), seg.Truncated)
 	s.Equal(10, len(seg.entryPos))
 	s.Equal("testdata/wal/0000000001.wal", seg.entryFilename)
 	s.Equal("testdata/wal/0000000001.wal.meta", seg.metaFilename)
@@ -86,7 +86,7 @@ func (s *segmentTestSuite) TestSegment_sync_readSegment() {
 	s.Equal(uint32(1), seg2.Index)
 	s.Equal(int64(1), seg2.Start)
 	s.Equal(int64(10), seg2.End)
-	s.Equal(int64(0), seg2.Truncated)
+	s.Equal(int64(-1), seg2.Truncated)
 	s.Equal(10, len(seg2.entryPos))
 	s.Equal("testdata/wal/0000000001.wal", seg2.entryFilename)
 	s.NotNil(seg2.entry) // since segment is not Archived
@@ -112,7 +112,7 @@ func (s *segmentTestSuite) TestSegment_archive_readSegment() {
 	s.Equal(uint32(1), seg.Index)
 	s.Equal(int64(1), seg.Start)
 	s.Equal(int64(10), seg.End)
-	s.Equal(int64(0), seg.Truncated)
+	s.Equal(int64(-1), seg.Truncated)
 	s.Equal(10, len(seg.entryPos))
 	s.Equal("testdata/wal/0000000001.wal", seg.entryFilename)
 	s.Equal("testdata/wal/0000000001.wal.meta", seg.metaFilename)
@@ -129,7 +129,7 @@ func (s *segmentTestSuite) TestSegment_archive_readSegment() {
 	s.Equal(uint32(1), seg2.Index)
 	s.Equal(int64(1), seg2.Start)
 	s.Equal(int64(10), seg2.End)
-	s.Equal(int64(0), seg2.Truncated)
+	s.Equal(int64(-1), seg2.Truncated)
 	s.Equal(10, len(seg2.entryPos))
 	s.Equal("testdata/wal/0000000001.wal", seg2.entryFilename)
 	s.Nil(seg2.entry) // since segment is Archived
@@ -155,7 +155,7 @@ func (s *segmentTestSuite) TestSegment_truncate0() {
 	s.Equal(uint32(1), seg.Index)
 	s.Equal(int64(1), seg.Start)
 	s.Equal(int64(10), seg.End)
-	s.Equal(int64(0), seg.Truncated)
+	s.Equal(int64(-1), seg.Truncated)
 	s.Equal(10, len(seg.entryPos))
 	s.Equal("testdata/wal/0000000001.wal", seg.entryFilename)
 	s.Equal("testdata/wal/0000000001.wal.meta", seg.metaFilename)
@@ -164,8 +164,8 @@ func (s *segmentTestSuite) TestSegment_truncate0() {
 	// truncate
 	err = seg.truncate(5)
 	s.NoError(err)
-	s.Less(seg.Truncated, seg.Start)
-	s.Equal(seg.Truncated+1, seg.Start)
+	s.Equal(int64(5), seg.Truncated)
+	s.Equal(seg.Truncated, seg.Start)
 	s.Equal(6, len(seg.entryPos))
 
 	// read from WAL file
@@ -175,7 +175,7 @@ func (s *segmentTestSuite) TestSegment_truncate0() {
 	s.Equal(uint32(1), seg2.Index)
 	s.Equal(int64(5), seg2.Start)
 	s.Equal(int64(10), seg2.End)
-	s.Equal(int64(4), seg2.Truncated)
+	s.Equal(int64(5), seg2.Truncated)
 	s.Equal(6, len(seg2.entryPos))
 	s.Equal("testdata/wal/0000000001.wal", seg2.entryFilename)
 	s.NotNil(seg2.entry) // since segment is not Archived
@@ -211,7 +211,8 @@ func (s *segmentTestSuite) TestSegment_truncate1() {
 	// and segment 2 to be truncated partially
 	err = seg3.truncate(12)
 	s.NoError(err)
-	s.Equal(seg3.Truncated, seg3.End)
+	s.Equal(int64(12), seg3.Truncated)
+	s.Equal(seg3.End, seg3.Start)
 
 	// read from WAL file segment 1, should be empty
 	_, err31 := readSegment(s.root, segmentFile("", 1))
@@ -249,7 +250,7 @@ func (s *segmentTestSuite) TestSegment_truncate2() {
 	s.Equal(uint32(2), seg3.Index)
 	s.Equal(int64(12), seg3.Start)
 	s.Equal(int64(20), seg3.End)
-	s.Equal(int64(11), seg3.Truncated)
+	s.Equal(int64(12), seg3.Truncated)
 	s.Equal(9, len(seg3.entryPos))
 	s.Equal("testdata/wal/0000000002.wal", seg3.entryFilename)
 	s.Nil(seg3.entry) // since segment is Archived

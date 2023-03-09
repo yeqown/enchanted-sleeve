@@ -1,9 +1,8 @@
 package wal
 
 import (
-	"bytes"
 	"encoding/binary"
-	"encoding/gob"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -33,13 +32,13 @@ type segment struct {
 }
 
 type segmentMeta struct {
-	Index uint32 // Index of the segment file
+	Index uint32 `json:"index"` // Index of the segment file
 
-	Archived bool // whether the segment is Archived (oversize)
+	Archived bool `json:"archived"` // whether the segment is Archived (oversize)
 
-	Start     int64 // Start offset of the entries in WAL
-	End       int64 // End offset of the entries in WAL
-	Truncated int64 // Truncated offset in the segment file (Start <= Truncated <= End)
+	Start     int64 `json:"start"`     // Start offset of the entries in WAL
+	End       int64 `json:"end"`       // End offset of the entries in WAL
+	Truncated int64 `json:"truncated"` // Truncated offset of the entries in WAL
 }
 
 func newSegment(root string, index uint32, start int64) (*segment, error) {
@@ -48,7 +47,7 @@ func newSegment(root string, index uint32, start int64) (*segment, error) {
 			Start:     start,
 			Archived:  false,
 			End:       start - 1,
-			Truncated: start - 1,
+			Truncated: -1,
 			Index:     index,
 		},
 
@@ -124,11 +123,7 @@ func (s *segment) truncate(offset int64) error {
 		return nil
 	}
 
-	if offset >= s.End {
-		s.Truncated = s.End
-	} else {
-		s.Truncated = offset
-	}
+	s.Truncated = offset
 
 	return s.sync()
 }
@@ -141,9 +136,10 @@ func (s *segment) truncate(offset int64) error {
 // we will only update the metadata of the segment.
 func (s *segment) sync() error {
 	entryChanged := false
-	if s.Truncated >= s.Start {
+	if s.Truncated > s.Start {
 		// totally truncated, remove the segment files
 		if s.Truncated >= s.End {
+			s.Start = s.End
 			return s.safelyRemove()
 		}
 		// partially truncated, we need to truncate the segment files
@@ -160,7 +156,6 @@ func (s *segment) sync() error {
 		s.entryPos = s.entryPos[posIdx:]
 		// reset segment meta (start, truncated)
 		s.Start = s.Truncated
-		s.Truncated = s.Truncated - 1
 		entryChanged = true
 	}
 
@@ -237,19 +232,28 @@ func (s *segment) flushEntries(fullWrite bool) error {
 }
 
 func (s *segment) flushMeta() error {
-	buf := bytes.NewBuffer(nil)
-	err := gob.NewEncoder(buf).Encode(s.segmentMeta)
+	data, err := json.Marshal(s.segmentMeta)
 	if err != nil {
 		return err
 	}
 
 	if s.meta != nil {
 		// update the metadata of the segment
-		_, err = s.meta.Write(buf.Bytes())
+		err = s.meta.Truncate(0)
+		if err != nil {
+			return err
+		}
+
+		_, err = s.meta.Seek(0, io.SeekStart)
+		if err != nil {
+			return err
+		}
+
+		_, err = s.meta.Write(data)
 		return err
 	}
 
-	return os.WriteFile(s.metaFilename, buf.Bytes(), 0644)
+	return os.WriteFile(s.metaFilename, data, 0644)
 }
 
 func (s *segment) read(offset int64) (entry Entry, err error) {
@@ -426,8 +430,7 @@ func readSegmentMeta(name string) (*segmentMeta, error) {
 	}
 
 	meta := &segmentMeta{}
-	err = gob.NewDecoder(bytes.NewBuffer(data)).Decode(meta)
-	if err != nil {
+	if err = json.Unmarshal(data, meta); err != nil {
 		return nil, err
 	}
 

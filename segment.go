@@ -24,6 +24,7 @@ const (
 //
 // The entry file would not be deleted unless the segment is archived and all entries
 // are marked as truncated.
+// FIXME: concurrent safety
 type segment struct {
 	segmentMeta
 
@@ -99,6 +100,10 @@ func newSegment(root string, index uint32, start int64) (*segment, error) {
 	}
 
 	return seg, nil
+}
+
+func (s *segment) close() error {
+	return s.closeFiles()
 }
 
 func (s *segment) openFiles() error {

@@ -21,6 +21,7 @@ type __WALSpec interface {
 }
 
 // WAL is a write-ahead log for storing data that needs to be persisted to disk.
+// FIXME: concurrent safety
 type WAL struct {
 	*Config
 
@@ -104,7 +105,7 @@ func (w *WAL) restore() error {
 	// if there is no segment file, create a new segment
 	if len(w.segments) == 0 {
 		// create a new segment file, and set it as the current segment
-		return w.applySegment()
+		return w.allocSegment()
 	}
 
 	// sort the segments by Index
@@ -124,8 +125,8 @@ func (w *WAL) restore() error {
 	return nil
 }
 
-// applySegment applies a new segment to the WAL.
-func (w *WAL) applySegment() error {
+// allocSegment applies a new segment to the WAL.
+func (w *WAL) allocSegment() error {
 	w.currentSegmentIdx += 1
 	seg, err := newSegment(w.Root, w.currentSegmentIdx, w.entryOffset+1)
 	if err != nil {
@@ -161,28 +162,26 @@ func (w *WAL) releaseSegment(index int) {
 		w.current = nil
 	}
 
-	_ = seg.safelyRemove()
+	if err := seg.safelyRemove(); err != nil {
+		defaultLogger.Log("WAL.releaseSegment failed to remove segment(%d) with error: %v", seg.Index, err)
+	}
 }
 
 func (w *WAL) Close() error {
-	err := w.Flush()
-	if err != nil {
+	if err := w.Flush(); err != nil {
 		return err
 	}
 
-	// TODO: close all segments
-	//for _, seg := range w.segments {
-	//	err := seg.close()
-	//	if err != nil {
-	//		return err
-	//	}
-	//}
+	for _, seg := range w.segments {
+		if err := seg.close(); err != nil {
+			defaultLogger.Log("WAL.Close failed to close segment(%d) with error: %v", seg.Index, err)
+		}
+	}
 
 	return nil
 }
 
 // Flush loop through all segments, and flush them to disk.
-// if segment is not nil, flush it (if it's Truncated, it should be deleted, otherwise it should be Archived)
 func (w *WAL) Flush() error {
 	for _, seg := range w.segments {
 		if seg == nil {
@@ -201,7 +200,7 @@ func (w *WAL) Flush() error {
 // Write writes an entry to the WAL.
 func (w *WAL) Write(entry Entry) (offset int64, err error) {
 	if w.current == nil {
-		err := w.applySegment()
+		err := w.allocSegment()
 		if err != nil {
 			return 0, err
 		}
@@ -213,7 +212,7 @@ func (w *WAL) Write(entry Entry) (offset int64, err error) {
 
 	// if the current segment is full, apply a new segment
 	if int64(w.current.size()) >= w.MaxSegmentSize {
-		err := w.applySegment()
+		err := w.allocSegment()
 		if err != nil {
 			return offset, err
 		}
@@ -289,7 +288,7 @@ func (w *WAL) TruncateBefore(offset int64) error {
 	}
 
 	// loop all segments before the located segment, including the located segment
-	for _, s := range w.segments {
+	for index, s := range w.segments {
 		if s.Index > seg.Index {
 			continue
 		}
@@ -302,7 +301,7 @@ func (w *WAL) TruncateBefore(offset int64) error {
 		}
 
 		if shouldRemove {
-			// TODO: remove segment from w.segments
+			w.releaseSegment(index)
 		}
 	}
 

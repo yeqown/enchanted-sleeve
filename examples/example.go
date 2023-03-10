@@ -8,6 +8,11 @@ import (
 )
 
 func main() {
+	//example()
+	example2()
+}
+
+func example() {
 	config := wal.DefaultConfig()
 	w, err := wal.NewWAL(config, wal.WithRoot("./testdata/wal"))
 	if err != nil {

@@ -114,10 +114,14 @@ func (w *WAL) restore() error {
 	sort.Slice(w.segments, func(i, j int) bool {
 		return w.segments[i].Index < w.segments[j].Index
 	})
-	// set the current segment
-	w.current = w.segments[len(w.segments)-1]
-	w.currentSegmentIdx = w.current.Index
-	w.latest = w.current.End
+
+	lastSeg := w.segments[len(w.segments)-1]
+	// if the last segment is not archived, set it as the current segment
+	if w.current == nil && !lastSeg.Archived {
+		w.current = lastSeg
+	}
+	w.currentSegmentIdx = lastSeg.Index
+	w.latest = lastSeg.End
 	w.oldest = max(w.segments[0].Start, w.segments[0].Truncated+1)
 
 	return nil
@@ -158,20 +162,14 @@ func (w *WAL) allocSegment() error {
 func (w *WAL) releaseSegment(index int) {
 	seg := w.segments[index]
 
-	// remove the segment from the list of segments
-	w.segments = append(w.segments[:index], w.segments[index+1:]...)
-
 	// if the segment is the current segment, set the current segment to nil
-	if w.current == w.segments[index] {
+	if w.current.Index == seg.Index {
 		w.current = nil
 	}
+	seg.safelyRemove()
 
-	if err := seg.safelyRemove(); err != nil {
-		defaultLogger.Log("WAL.releaseSegment failed to remove segment(%d) with error: %v", seg.Index, err)
-	}
-
-	// update the oldest offset
-	w.oldest = max(w.oldest, seg.End+1)
+	w.segments = append(w.segments[:index], w.segments[index+1:]...) // remove the segment from the list
+	w.oldest = max(w.oldest, seg.End+1)                              // update the oldest offset
 }
 
 func (w *WAL) Close() error {
@@ -215,7 +213,13 @@ func (w *WAL) Write(entry Entry) (offset int64, err error) {
 
 	// write the entry to the current segment
 	offset, err = w.current.write(entry)
+	if err != nil {
+		return 0, err
+	}
 	w.latest = offset
+	if w.oldest == 0 {
+		w.oldest = offset
+	}
 
 	// if the current segment is full, apply a new segment
 	if int64(w.current.size()) >= w.MaxSegmentSize {

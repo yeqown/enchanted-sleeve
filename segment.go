@@ -217,7 +217,8 @@ func (s *segment) flush(newArchived bool) error {
 	// remove the segment files directly.
 	if s.Archived || newArchived {
 		if s.Truncated >= s.End {
-			return s.safelyRemove()
+			s.safelyRemove()
+			return nil
 		}
 	}
 
@@ -238,17 +239,19 @@ func (s *segment) flush(newArchived bool) error {
 	return nil
 }
 
-func (s *segment) safelyRemove() error {
+func (s *segment) safelyRemove() {
 	_ = s.closeFiles()
 
 	if err := os.Remove(s.entryFilename); err != nil {
-		return err
+		if !os.IsNotExist(err) {
+			defaultLogger.Log("segment safelyRemove entryFile(%s) error: %v", s.entryFilename, err)
+		}
 	}
 	if err := os.Remove(s.metaFilename); err != nil {
-		return err
+		if !os.IsNotExist(err) {
+			defaultLogger.Log("segment safelyRemove metaFile(%s) error: %v", s.metaFilename, err)
+		}
 	}
-
-	return nil
 }
 
 func (s *segment) flushEntries() error {
@@ -455,7 +458,10 @@ func readSegment(root string, name string) (*segment, error) {
 
 	// compare buf size and entry position end
 	last := len(seg.entryPos) - 1
-	lastEnd := seg.entryPos[last].end
+	lastEnd := 0
+	if len(seg.entryPos) != 0 {
+		lastEnd = seg.entryPos[last].end
+	}
 	if lastEnd != bufLen {
 		defaultLogger.Log(
 			"invalid buf size(%d) and last(%d) entry end(%d)", bufLen, last, lastEnd)

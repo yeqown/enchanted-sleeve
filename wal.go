@@ -29,7 +29,8 @@ type WAL struct {
 	current           *segment
 	currentSegmentIdx uint32
 
-	entryOffset int64
+	latest int64 // the offset of the latest entry
+	oldest int64 // the offset of the oldest entry
 }
 
 func NewWAL(config *Config, options ...OptionWAL) (*WAL, error) {
@@ -48,7 +49,8 @@ func NewWAL(config *Config, options ...OptionWAL) (*WAL, error) {
 		current:           nil,
 		currentSegmentIdx: 0,
 
-		entryOffset: 0,
+		latest: 0,
+		oldest: 0,
 	}
 
 	if config.Logger != nil {
@@ -115,20 +117,21 @@ func (w *WAL) restore() error {
 	// set the current segment
 	w.current = w.segments[len(w.segments)-1]
 	w.currentSegmentIdx = w.current.Index
-	w.entryOffset = w.current.End
-
-	// if the maximum number of segments is reached, release the oldest seg
-	for len(w.segments) > w.MaxSegments {
-		w.releaseSegment(0)
-	}
+	w.latest = w.current.End
+	w.oldest = max(w.segments[0].Start, w.segments[0].Truncated+1)
 
 	return nil
 }
 
-// allocSegment applies a new segment to the WAL.
+// allocSegment applies a new segment to the WAL.segment list, and set it as the current segment.
+// This method should be called after the WAL is created or a segment is fulled,
+// and we need to apply a new segment to the WAL.
+//
+// This method will release the oldest segment (normally the segment in segments[0]) if
+// the number of segments exceeds the maximum number of segments.
 func (w *WAL) allocSegment() error {
 	w.currentSegmentIdx += 1
-	seg, err := newSegment(w.Root, w.currentSegmentIdx, w.entryOffset+1)
+	seg, err := newSegment(w.Root, w.currentSegmentIdx, w.latest+1)
 	if err != nil {
 		return err
 	}
@@ -141,10 +144,11 @@ func (w *WAL) allocSegment() error {
 
 	w.segments = append(w.segments, seg)
 	w.current = seg
+	// new segment flush immediately, since it's allocated.
 	_ = w.current.flush(false)
 
 	// if the maximum number of segments is reached, release the oldest seg
-	if len(w.segments) > w.MaxSegments {
+	for len(w.segments) > w.MaxSegments {
 		w.releaseSegment(0)
 	}
 
@@ -165,6 +169,9 @@ func (w *WAL) releaseSegment(index int) {
 	if err := seg.safelyRemove(); err != nil {
 		defaultLogger.Log("WAL.releaseSegment failed to remove segment(%d) with error: %v", seg.Index, err)
 	}
+
+	// update the oldest offset
+	w.oldest = max(w.oldest, seg.End+1)
 }
 
 func (w *WAL) Close() error {
@@ -208,7 +215,7 @@ func (w *WAL) Write(entry Entry) (offset int64, err error) {
 
 	// write the entry to the current segment
 	offset, err = w.current.write(entry)
-	w.entryOffset = offset
+	w.latest = offset
 
 	// if the current segment is full, apply a new segment
 	if int64(w.current.size()) >= w.MaxSegmentSize {
@@ -244,7 +251,7 @@ func (w *WAL) locateSegment(offset int64) (*segment, error) {
 
 func (w *WAL) Read(offset int64) (entry Entry, err error) {
 	if offset < 0 {
-		offset = w.entryOffset
+		offset = w.latest
 	}
 
 	seg, err := w.locateSegment(offset)
@@ -269,12 +276,21 @@ func (w *WAL) Read(offset int64) (entry Entry, err error) {
 // ReadLatest reads the latest entry from the WAL.
 // Same as Read(-1) but returns the offset of the entry.
 func (w *WAL) ReadLatest() (entry Entry, offset int64, err error) {
-	entry, err = w.Read(w.entryOffset)
+	entry, err = w.Read(w.latest)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	return entry, w.entryOffset, nil
+	return entry, w.latest, nil
+}
+
+func (w *WAL) ReadOldest() (entry Entry, offset int64, err error) {
+	entry, err = w.Read(w.oldest)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return entry, w.oldest, nil
 }
 
 func (w *WAL) TruncateBefore(offset int64) error {
@@ -285,6 +301,12 @@ func (w *WAL) TruncateBefore(offset int64) error {
 
 	if seg == nil {
 		return nil
+	}
+
+	// move the oldest offset to the located segment
+	w.oldest = max(offset+1, w.oldest)
+	if w.oldest > w.latest {
+		w.oldest = w.latest
 	}
 
 	// loop all segments before the located segment, including the located segment
@@ -306,4 +328,12 @@ func (w *WAL) TruncateBefore(offset int64) error {
 	}
 
 	return nil
+}
+
+func max(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+
+	return b
 }

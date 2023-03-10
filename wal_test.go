@@ -188,18 +188,36 @@ func (t *testSuiteWAL) Test_WAL_OverThan_MaxSegments() {
 		sum += int64(s.size())
 	}
 	t.Less(sum, int64(wal.MaxSegments)*wal.MaxSegmentSize)
+	t.Equal(int64(10000), wal.latest)
+	t.Equal(wal.segments[0].Start, wal.oldest)
+
+	// close and reopen
+	err = wal.Close()
+	t.Require().NoError(err)
+	wal2, err2 := NewWAL(
+		DefaultConfig(),
+		WithRoot(__testSuiteWALRoot),
+		WithMaxSegments(10),
+		WithMaxSegmentSize(1024),
+	)
+	t.Require().NoError(err2)
 
 	// read not removed entry MUST return getEntry(i)
-	oldest := wal.segments[0].Start
-	newest := wal.segments[len(wal.segments)-1].End
+	oldest := wal2.segments[0].Start
+	latest := wal2.segments[len(wal2.segments)-1].End
+	t.Equal(wal.oldest, wal2.oldest)
+	t.Equal(wal2.oldest, oldest)
+	t.Equal(wal.latest, wal2.latest)
+	t.Equal(wal2.latest, latest)
+
 	// read removed entry MUST return ErrEntryNotFound
 	for i := int64(1); i < oldest; i++ {
-		_, err := wal.Read(i)
+		_, err := wal2.Read(i)
 		t.Require().Error(err)
 		t.Require().Equal(ErrEntryNotFound, err)
 	}
-	for i := oldest; i <= newest; i++ {
-		b, err := wal.Read(i)
+	for i := oldest; i <= latest; i++ {
+		b, err := wal2.Read(i)
 		t.Require().NoError(err)
 		t.Require().Equal(getEntry(int(i-1)), b)
 	}

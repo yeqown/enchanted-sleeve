@@ -346,6 +346,8 @@ func (s *segment) write(entry Entry) (offset int64, err error) {
 	s.End += 1
 	s.entryPos = append(s.entryPos, pos)
 
+	// TODO: add checkpoint to flush the segment to disk
+
 	return s.End, nil
 }
 

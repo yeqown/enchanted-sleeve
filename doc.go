@@ -24,4 +24,7 @@ var (
 
 	// ErrSegmentFileMess is returned when a segment file could not be parsed successfully.
 	ErrSegmentFileMess = errors.New("segment file mess")
+
+	// ErrSegmentArchived is returned when a segment is archived.
+	ErrSegmentArchived = errors.New("segment archived")
 )

@@ -133,14 +133,14 @@ func (w *WAL) applySegment() error {
 	}
 
 	if w.current != nil {
-		if err := w.current.archive(); err != nil {
+		if err := w.current.flush(true); err != nil {
 			return err
 		}
 	}
 
 	w.segments = append(w.segments, seg)
 	w.current = seg
-	_ = w.current.sync()
+	_ = w.current.flush(false)
 
 	// if the maximum number of segments is reached, release the oldest seg
 	if len(w.segments) > w.MaxSegments {
@@ -181,15 +181,15 @@ func (w *WAL) Close() error {
 	return nil
 }
 
-// Flush loop through all segments, and sync them to disk.
-// if segment is not nil, sync it (if it's Truncated, it should be deleted, otherwise it should be Archived)
+// Flush loop through all segments, and flush them to disk.
+// if segment is not nil, flush it (if it's Truncated, it should be deleted, otherwise it should be Archived)
 func (w *WAL) Flush() error {
 	for _, seg := range w.segments {
 		if seg == nil {
 			continue
 		}
 
-		err := seg.sync()
+		err := seg.flush(false)
 		if err != nil {
 			return err
 		}
@@ -296,8 +296,13 @@ func (w *WAL) TruncateBefore(offset int64) error {
 
 		// mark the segment.Truncated the max offset in segment,
 		// so that the segment can be released when the WAL is flushed
-		if err = s.truncate(offset); err != nil {
+		shouldRemove, err := s.markTruncated(offset)
+		if err != nil {
 			return err
+		}
+
+		if shouldRemove {
+			// TODO: remove segment from w.segments
 		}
 	}
 

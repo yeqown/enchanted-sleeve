@@ -100,7 +100,7 @@ func (t *testSuiteWAL) Test_WAL_TruncateBefore() {
 		t.Require().Equal(int64(i), offset)
 	}
 
-	// truncate before
+	// markTruncated before
 	err = wal.TruncateBefore(50)
 	t.Require().NoError(err)
 
@@ -133,7 +133,7 @@ func (t *testSuiteWAL) Test_WAL_TruncateBefore_Restore() {
 		t.Require().Equal(int64(i), offset)
 	}
 
-	// truncate after
+	// markTruncated after
 	err = wal.TruncateBefore(50)
 	t.Require().NoError(err)
 	err = wal.Close()

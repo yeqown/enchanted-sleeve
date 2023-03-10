@@ -18,6 +18,12 @@ const (
 	segmentMetaFileSuffix = ".wal.meta"
 )
 
+// segment is the unit of WAL, it contains a entry file and a meta file.
+// The entry file is for storing the entries, and the meta file is for storing
+// the metadata of the segment.
+//
+// The entry file would not be deleted unless the segment is archived and all entries
+// are marked as truncated.
 type segment struct {
 	segmentMeta
 
@@ -43,14 +49,37 @@ type segmentMeta struct {
 	Truncated int64 `json:"truncated"` // Truncated offset of the entries in WAL
 }
 
+func (m *segmentMeta) canWrite() (bool, error) {
+	can := !m.Archived
+	if !can {
+		return false, errors.Wrapf(ErrSegmentArchived,
+			"segment(%d) is archived, can not write", m.Index)
+	}
+
+	return true, nil
+}
+
+func (m *segmentMeta) canRead(offset int64) (bool, error) {
+	if offset < m.Start || offset > m.End {
+		return false, errors.Wrapf(ErrSegmentInvalidOffset,
+			"offset(%d) not in range(%d, %d)", offset, m.Start, m.End)
+	}
+
+	if offset <= m.Truncated {
+		return false, errors.Wrapf(ErrSegmentInvalidOffset, "offset(%d) is truncated", offset)
+	}
+
+	return true, nil
+}
+
 func newSegment(root string, index uint32, start int64) (*segment, error) {
 	seg := &segment{
 		segmentMeta: segmentMeta{
 			Start:     start,
 			Archived:  false,
 			End:       start - 1,
-			Truncated: -1,
 			Index:     index,
+			Truncated: -1,
 		},
 
 		buf:          make([]byte, 0, 1024),
@@ -88,6 +117,19 @@ func (s *segment) openFiles() error {
 	return nil
 }
 
+func (s *segment) closeFiles() error {
+	if s.entry != nil {
+		_ = s.entry.Close()
+		s.entry = nil
+	}
+	if s.meta != nil {
+		_ = s.meta.Close()
+		s.meta = nil
+	}
+
+	return nil
+}
+
 // archive closes the segment files, it can be called only once,
 // while segment is current segment, it will be called when a new segment is created.
 func (s *segment) archive() error {
@@ -95,161 +137,133 @@ func (s *segment) archive() error {
 		return nil
 	}
 
-	s.Archived = true
-	if err := s.sync(); err != nil {
+	if err := s.flush(true); err != nil {
 		return err
 	}
 
-	// close the segment files
-	if s.entry != nil {
-		if err := s.entry.Close(); err != nil {
-			return err
-		}
-		s.entry = nil
-	}
-	if s.meta != nil {
-		if err := s.meta.Close(); err != nil {
-			return err
-		}
-		s.meta = nil
-	}
-
-	return nil
+	return s.closeFiles()
 }
 
-// truncate truncates the segment file to the given offset.
-// If offset is not in the range of the segment, nothing will be done, otherwise
-// we mark the max offset of the segment as the given offset, and truncate the segment file.
-func (s *segment) truncate(offset int64) error {
+// markTruncated marks the segment as truncated to the given offset.
+func (s *segment) markTruncated(offset int64) (removed bool, err error) {
 	if offset < s.Start {
-		return nil
+		return false, nil
 	}
 
 	s.Truncated = offset
+	removed = offset >= s.End
 
-	return s.sync()
+	//if offset >= s.End {
+	//	err = s.safelyRemove()
+	//	return true, err
+	//}
+
+	//truncated := false
+	//// refresh the segment meta and entry buffer, and then flush them to disk
+	//if offset > s.Start {
+	//	if offset >= s.End {
+	//		if s.Archived {
+	//			// archived truncated, remove the segment files directly
+	//			s.entryPos = s.entryPos[:0]
+	//			s.buf = s.buf[:0]
+	//			s.Start = s.End + 1
+	//			s.entryFlushed = 0
+	//			return s.safelyRemove()
+	//		}
+	//
+	//		// not archived
+	//		offset = s.End
+	//	}
+	//
+	//	// partially truncated, we need to markTruncated the segment files
+	//	// DOESN'T include the truncated entry.
+	//	posIdx := offset - s.Start
+	//	if posIdx >= int64(len(s.entryPos)) {
+	//		errmsg := fmt.Sprintf("markTruncated(%d) error: range(%d, %d) len(%d) \n", offset, s.Start, s.End, len(s.entryPos))
+	//		fmt.Println(errmsg)
+	//		return fmt.Errorf(errmsg)
+	//	}
+	//
+	//	pos := s.entryPos[posIdx]
+	//	s.buf = s.buf[pos.end:]
+	//
+	//	// reset the entry positions
+	//	s.entryPos = s.entryPos[posIdx+1:]
+	//	for idx, p := range s.entryPos {
+	//		s.entryPos[idx].offset = p.offset - pos.end
+	//		s.entryPos[idx].end = p.end - pos.end
+	//	}
+	//
+	//	// reset segment meta (start, truncated)
+	//	s.Start = offset + 1
+	//
+	//	truncated = true
+	//}
+	//
+	//// flush the segment files to disk
+	//return s.flush(truncated)
+
+	err = s.flush(false)
+	return removed, err
 }
 
-// sync flushes the segment files to disk.
-// If segment contains no entry, it will be removed, otherwise we
-// flush the segment files to disk, and update the metadata of the segment.
-//
-// hasArchived indicates whether the segment has been Archived, if it is not archived,
-// we will only update the metadata of the segment.
-func (s *segment) sync() error {
-	entryChanged := false
-	if s.Truncated > s.Start {
-		// totally truncated, remove the segment files
+func (s *segment) flush(newArchived bool) error {
+	// if the segment is truncated to the end AND archived,
+	// remove the segment files directly.
+	if s.Archived || newArchived {
 		if s.Truncated >= s.End {
-			s.Start = s.Truncated + 1
 			return s.safelyRemove()
 		}
-
-		// partially truncated, we need to truncate the segment files
-		// DOESN'T include the truncated entry.
-		posIdx := (s.Truncated - s.Start) + 1
-		if posIdx >= int64(len(s.entryPos)) {
-			errmsg := fmt.Sprintf("truncate(%d) error: range(%d, %d) len(%d) \n", s.Truncated, s.Start, s.End, len(s.entryPos))
-			fmt.Println(errmsg)
-			return fmt.Errorf(errmsg)
-		}
-
-		pos := s.entryPos[posIdx]
-		s.buf = s.buf[pos.offset:]
-
-		// reset the entry positions
-		s.entryPos = s.entryPos[posIdx:]
-		for idx, p := range s.entryPos {
-			s.entryPos[idx].offset = p.offset - pos.offset
-			s.entryPos[idx].end = p.end - pos.offset
-		}
-
-		// reset segment meta (start, truncated)
-		s.Start = s.Truncated + 1
-		entryChanged = true
 	}
 
-	// not Truncated, we need to flush the segment files to disk
-	if err := s.flushEntries(entryChanged); err != nil {
+	// if the segment is archived before, only flush the meta file
+	if s.Archived {
+		// only flush the meta file
+		return s.flushMeta()
+	}
+
+	if err := s.flushEntries(); err != nil {
 		return err
 	}
+	s.Archived = newArchived
 	if err := s.flushMeta(); err != nil {
 		return err
-	}
-
-	// if segment is not Archived yet, we need to close the segment files
-	if s.entry != nil {
-		// entry and meta files are opened, we need to sync them to disk and close them
-		if err := s.entry.Sync(); err != nil {
-			return err
-		}
-	}
-	if s.meta != nil {
-		if err := s.meta.Sync(); err != nil {
-			return err
-		}
 	}
 
 	return nil
 }
 
 func (s *segment) safelyRemove() error {
-	if s.Archived {
-		if err := os.Remove(s.entryFilename); err != nil {
-			return err
-		}
-		if err := os.Remove(s.metaFilename); err != nil {
-			return err
-		}
-	}
+	_ = s.closeFiles()
 
-	if s.entry != nil {
-		_ = s.entry.Truncate(0)
-		_, _ = s.entry.Seek(0, io.SeekStart)
-		_ = s.entry.Sync()
+	if err := os.Remove(s.entryFilename); err != nil {
+		return err
 	}
-	if s.meta != nil {
-		_ = s.meta.Truncate(0)
-		_, _ = s.meta.Seek(0, io.SeekStart)
-		_ = s.entry.Sync()
+	if err := os.Remove(s.metaFilename); err != nil {
+		return err
 	}
 
 	return nil
 }
 
-func (s *segment) flushEntries(fullWrite bool) error {
-	// archived and not changed, nothing to do
-	if s.entry == nil && !fullWrite {
-		// archived segment
-		return nil
-	}
-
-	if s.entry != nil && fullWrite {
-		// we need to truncate the segment file
-		if err := s.entry.Truncate(0); err != nil {
-			return err
-		}
-		if _, err := s.entry.Seek(0, io.SeekStart); err != nil {
-			return err
-		}
-
-		_, err := s.entry.Write(s.buf)
-		return err
-	}
-
-	if s.entry == nil && fullWrite {
-		return os.WriteFile(s.entryFilename, s.buf, 0644)
-	}
-
-	// s.entry != nil && !fullWrite
-	// incremental write
-	if s.entryFlushed >= len(s.buf) {
+func (s *segment) flushEntries() error {
+	if s.Archived {
 		return nil
 	}
 
 	_, err := s.entry.Write(s.buf[s.entryFlushed:])
+	if err != nil {
+		return err
+	}
 	s.entryFlushed = len(s.buf)
-	return err
+
+	// entry and meta files are opened, we need to flush them to disk and close them
+	if err := s.entry.Sync(); err != nil {
+		defaultLogger.Log("segment flush entryFile(%s) error: %v", s.entryFilename, err)
+		return err
+	}
+
+	return nil
 }
 
 func (s *segment) flushMeta() error {
@@ -262,6 +276,11 @@ func (s *segment) flushMeta() error {
 		_ = s.meta.Truncate(0)
 		_, _ = s.meta.Seek(0, io.SeekStart)
 		_, err = s.meta.Write(data)
+
+		if err := s.meta.Sync(); err != nil {
+			defaultLogger.Log("segment flush metaFile(%s) error: %v", s.metaFilename, err)
+		}
+
 		return err
 	}
 
@@ -269,18 +288,14 @@ func (s *segment) flushMeta() error {
 }
 
 func (s *segment) read(offset int64) (entry Entry, err error) {
-	if offset < s.Start || offset > s.End {
-		return nil, errors.Wrapf(ErrSegmentInvalidOffset,
-			"offset(%d) not in range(%d, %d)", offset, s.Start, s.End)
+	if ok, err1 := s.canRead(offset); !ok {
+		return nil, err1
 	}
 
 	posIdx := offset - s.Start
 	pos := s.entryPos[posIdx]
 
 	data := s.buf[pos.offset:pos.end]
-	if err != nil {
-		return nil, err
-	}
 	entry, err = readBinary(data)
 	if err != nil {
 		return nil, err
@@ -312,6 +327,10 @@ func writeBinary(entry Entry) []byte {
 }
 
 func (s *segment) write(entry Entry) (offset int64, err error) {
+	if can, err1 := s.canWrite(); !can {
+		return -1, err1
+	}
+
 	// encode the entry, and append it to the buffer
 	buf := writeBinary(entry)
 	pos := entryPosition{

@@ -14,6 +14,8 @@ type Config struct {
 
 	MaxSegmentSize int64 // represents the maximum size of a segment file in bytes, 0 means unlimited
 	MaxSegments    int   // represents the maximum number of segments to keep, 0 means unlimited
+
+	Logger __loggerSpec // represents the __loggerSpec to use for logging
 }
 
 type OptionWAL interface {

@@ -21,4 +21,7 @@ var (
 
 	// ErrEntryNotFound is returned when a entry is not found.
 	ErrEntryNotFound = errors.New("entry not found")
+
+	// ErrSegmentFileMess is returned when a segment file could not be parsed successfully.
+	ErrSegmentFileMess = errors.New("segment file mess")
 )

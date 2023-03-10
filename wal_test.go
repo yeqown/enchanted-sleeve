@@ -94,10 +94,10 @@ func (t *testSuiteWAL) Test_WAL_TruncateBefore() {
 	t.Require().NoError(err)
 
 	// write
-	for i := 0; i < 100; i++ {
+	for i := 1; i <= 100; i++ {
 		offset, err := wal.Write(getEntry(i))
 		t.Require().NoError(err)
-		t.Require().Equal(int64(i+1), offset)
+		t.Require().Equal(int64(i), offset)
 	}
 
 	// truncate before
@@ -105,13 +105,13 @@ func (t *testSuiteWAL) Test_WAL_TruncateBefore() {
 	t.Require().NoError(err)
 
 	// read
-	for i := 0; i < 100; i++ {
-		b, err := wal.Read(int64(i + 1))
-		if i < 49 {
-			t.Require().Error(err)
+	for i := 1; i <= 100; i++ {
+		b, err := wal.Read(int64(i))
+		if i <= 50 {
+			t.Require().Error(err, "i: %d", i)
 			t.Require().Equal(ErrEntryNotFound, err)
 		} else {
-			t.Require().NoError(err)
+			t.Require().NoError(err, "i: %d", i)
 			t.Require().Equal(getEntry(i), b)
 		}
 	}
@@ -127,10 +127,10 @@ func (t *testSuiteWAL) Test_WAL_TruncateBefore_Restore() {
 	t.Require().NoError(err)
 
 	// write
-	for i := 0; i < 100; i++ {
+	for i := 1; i <= 100; i++ {
 		offset, err := wal.Write(getEntry(i))
 		t.Require().NoError(err)
-		t.Require().Equal(int64(i+1), offset)
+		t.Require().Equal(int64(i), offset)
 	}
 
 	// truncate after
@@ -148,9 +148,9 @@ func (t *testSuiteWAL) Test_WAL_TruncateBefore_Restore() {
 	t.Require().NoError(err2)
 
 	// read
-	for i := 0; i < 100; i++ {
-		b, err := wal2.Read(int64(i + 1))
-		if i < 49 {
+	for i := 1; i <= 100; i++ {
+		b, err := wal2.Read(int64(i))
+		if i <= 50 {
 			t.Require().Error(err)
 			t.Require().Equal(ErrEntryNotFound, err)
 		} else {

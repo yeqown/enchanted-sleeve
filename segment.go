@@ -141,13 +141,13 @@ func (s *segment) sync() error {
 	if s.Truncated > s.Start {
 		// totally truncated, remove the segment files
 		if s.Truncated >= s.End {
-			s.Start = s.End
+			s.Start = s.Truncated + 1
 			return s.safelyRemove()
 		}
 
 		// partially truncated, we need to truncate the segment files
 		// DOESN'T include the truncated entry.
-		posIdx := s.Truncated - s.Start
+		posIdx := (s.Truncated - s.Start) + 1
 		if posIdx >= int64(len(s.entryPos)) {
 			errmsg := fmt.Sprintf("truncate(%d) error: range(%d, %d) len(%d) \n", s.Truncated, s.Start, s.End, len(s.entryPos))
 			fmt.Println(errmsg)
@@ -165,7 +165,7 @@ func (s *segment) sync() error {
 		}
 
 		// reset segment meta (start, truncated)
-		s.Start = s.Truncated
+		s.Start = s.Truncated + 1
 		entryChanged = true
 	}
 
@@ -194,19 +194,26 @@ func (s *segment) sync() error {
 }
 
 func (s *segment) safelyRemove() error {
-	if s.entry != nil {
-		_ = s.entry.Close()
-	}
-	if s.meta != nil {
-		_ = s.meta.Close()
+	if s.Archived {
+		if err := os.Remove(s.entryFilename); err != nil {
+			return err
+		}
+		if err := os.Remove(s.metaFilename); err != nil {
+			return err
+		}
 	}
 
-	if err := os.Remove(s.entryFilename); err != nil {
-		return err
+	if s.entry != nil {
+		_ = s.entry.Truncate(0)
+		_, _ = s.entry.Seek(0, io.SeekStart)
+		_ = s.entry.Sync()
 	}
-	if err := os.Remove(s.metaFilename); err != nil {
-		return err
+	if s.meta != nil {
+		_ = s.meta.Truncate(0)
+		_, _ = s.meta.Seek(0, io.SeekStart)
+		_ = s.entry.Sync()
 	}
+
 	return nil
 }
 
@@ -236,6 +243,10 @@ func (s *segment) flushEntries(fullWrite bool) error {
 
 	// s.entry != nil && !fullWrite
 	// incremental write
+	if s.entryFlushed >= len(s.buf) {
+		return nil
+	}
+
 	_, err := s.entry.Write(s.buf[s.entryFlushed:])
 	s.entryFlushed = len(s.buf)
 	return err
@@ -248,17 +259,8 @@ func (s *segment) flushMeta() error {
 	}
 
 	if s.meta != nil {
-		// update the metadata of the segment
-		err = s.meta.Truncate(0)
-		if err != nil {
-			return err
-		}
-
-		_, err = s.meta.Seek(0, io.SeekStart)
-		if err != nil {
-			return err
-		}
-
+		_ = s.meta.Truncate(0)
+		_, _ = s.meta.Seek(0, io.SeekStart)
 		_, err = s.meta.Write(data)
 		return err
 	}
@@ -393,14 +395,16 @@ func readSegment(root string, name string) (*segment, error) {
 
 	for offset < n {
 		if n-offset < __EntryLenSize {
-			panic("invalid entry, data mess")
+			defaultLogger.Log("size(%d) of left data(%s) is too short", n-offset, data[offset:])
+			return nil, errors.Wrapf(ErrSegmentFileMess,
+				"size(%d) of left data(%s) is too short", n-offset, data[offset:])
 		}
 
 		// read the entry length
 		entryLen := binary.BigEndian.Uint16(data[offset:])
 		next := offset + int(entryLen) + __EntryLenSize
 		if next > n {
-			panic("invalid entry, data mess")
+			return nil, errors.Wrapf(ErrSegmentFileMess, "invalid entry length(%d)", entryLen)
 		}
 
 		pos := entryPosition{
@@ -414,12 +418,23 @@ func readSegment(root string, name string) (*segment, error) {
 	}
 
 	// compare the entry count and the entry position count
-	if len(seg.entryPos) != int(seg.End-seg.Start+1) {
-		return nil, fmt.Errorf("invalid entry, data mess")
+	bufLen := len(seg.buf)
+	entryPosNum := len(seg.entryPos)
+	if entryNum := seg.End - seg.Start + 1; entryPosNum != int(entryNum) {
+		defaultLogger.Log(
+			"invalid entry count(%d) [%d:%d] and entryPos count(%d)", entryNum, seg.End, seg.Start, entryPosNum)
+		return nil, errors.Wrapf(ErrSegmentFileMess,
+			"invalid entry count(%d) and entryPos count(%d)", entryNum, entryPosNum)
 	}
+
 	// compare buf size and entry position end
-	if seg.entryPos[len(seg.entryPos)-1].end != len(seg.buf) {
-		return nil, fmt.Errorf("invalid entry, data mess")
+	last := len(seg.entryPos) - 1
+	lastEnd := seg.entryPos[last].end
+	if lastEnd != bufLen {
+		defaultLogger.Log(
+			"invalid buf size(%d) and last(%d) entry end(%d)", bufLen, last, lastEnd)
+		return nil, errors.Wrapf(ErrSegmentFileMess,
+			"invalid buf size(%d) and last(%d) end(%d)", bufLen, last, lastEnd)
 	}
 
 	if !seg.Archived {

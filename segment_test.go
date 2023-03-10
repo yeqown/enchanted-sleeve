@@ -167,18 +167,18 @@ func (s *segmentTestSuite) TestSegment_truncate0() {
 	err = seg.truncate(5)
 	s.NoError(err)
 	s.Equal(int64(5), seg.Truncated)
-	s.Equal(seg.Truncated, seg.Start)
-	s.Equal(6, len(seg.entryPos))
+	s.Equal(seg.Truncated+1, seg.Start)
+	s.Equal(5, len(seg.entryPos))
 
 	// read from WAL file
 	seg2, err2 := readSegment(s.root, segmentFile("", 1))
 	s.NoError(err2)
 
 	s.Equal(uint32(1), seg2.Index)
-	s.Equal(int64(5), seg2.Start)
+	s.Equal(int64(6), seg2.Start)
 	s.Equal(int64(10), seg2.End)
 	s.Equal(int64(5), seg2.Truncated)
-	s.Equal(6, len(seg2.entryPos))
+	s.Equal(5, len(seg2.entryPos))
 	s.Equal("testdata/wal/0000000001.wal", seg2.entryFilename)
 	s.NotNil(seg2.entry) // since segment is not Archived
 	s.Equal("testdata/wal/0000000001.wal.meta", seg2.metaFilename)
@@ -186,7 +186,7 @@ func (s *segmentTestSuite) TestSegment_truncate0() {
 	s.Equal(false, seg.Archived)
 
 	// read the entries
-	for i := 0; i < 6; i++ {
+	for i := 1; i < 6; i++ {
 		entry, err := seg2.read(int64(i + 5))
 		s.NoError(err)
 		s.Equal(Entry("hello world"+strconv.Itoa(i+4)), entry)
@@ -250,10 +250,10 @@ func (s *segmentTestSuite) TestSegment_truncate2() {
 	s.Equal(seg2.metaFilename, seg3.metaFilename)
 
 	s.Equal(uint32(2), seg3.Index)
-	s.Equal(int64(12), seg3.Start)
+	s.Equal(int64(13), seg3.Start)
 	s.Equal(int64(20), seg3.End)
 	s.Equal(int64(12), seg3.Truncated)
-	s.Equal(9, len(seg3.entryPos))
+	s.Equal(8, len(seg3.entryPos))
 	s.Equal("testdata/wal/0000000002.wal", seg3.entryFilename)
 	s.Nil(seg3.entry) // since segment is Archived
 	s.Equal("testdata/wal/0000000002.wal.meta", seg3.metaFilename)
@@ -261,7 +261,7 @@ func (s *segmentTestSuite) TestSegment_truncate2() {
 	s.Equal(true, seg3.Archived)
 
 	// check the entries
-	for i := 0; i < 9; i++ {
+	for i := 1; i < 9; i++ {
 		entry, err := seg3.read(int64(i + 12))
 		s.NoError(err)
 		s.Equal(Entry("hello world"+strconv.Itoa(i+1)), entry)

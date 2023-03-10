@@ -16,7 +16,7 @@ type __WALSpec interface {
 	Read(offset int64) (entry Entry, err error)         // returns the entry at the given offset
 	ReadLatest() (entry Entry, offset int64, err error) // same to Read(-1)
 
-	TruncateBefore(offset int64) error // removes all entries before the given offset
+	TruncateBefore(offset int64) error // removes all entries before the given offset(included)
 	// TruncateAfter(offset int64) error  // removes all entries after the given offset
 }
 
@@ -48,6 +48,10 @@ func NewWAL(config *Config, options ...OptionWAL) (*WAL, error) {
 		currentSegmentIdx: 0,
 
 		entryOffset: 0,
+	}
+
+	if config.Logger != nil {
+		defaultLogger = config.Logger
 	}
 
 	err := w.restore()
@@ -136,6 +140,7 @@ func (w *WAL) applySegment() error {
 
 	w.segments = append(w.segments, seg)
 	w.current = seg
+	_ = w.current.sync()
 
 	// if the maximum number of segments is reached, release the oldest seg
 	if len(w.segments) > w.MaxSegments {
@@ -275,8 +280,12 @@ func (w *WAL) ReadLatest() (entry Entry, offset int64, err error) {
 
 func (w *WAL) TruncateBefore(offset int64) error {
 	seg, err := w.locateSegment(offset)
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrSegmentNotFound) {
 		return err
+	}
+
+	if seg == nil {
+		return nil
 	}
 
 	// loop all segments before the located segment, including the located segment

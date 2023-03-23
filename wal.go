@@ -232,12 +232,8 @@ func (w *WAL) Write(entry Entry) (offset int64, err error) {
 	return offset, err
 }
 
+// locateSegment finds the segment containing the given offset (binary search).
 func (w *WAL) locateSegment(offset int64) (*segment, error) {
-	// locate the segment that contains the entry, binary search
-	//segIdx := sort.Search(len(w.segments), func(i int) bool {
-	//	return w.segments[i].Start > offset
-	//})
-
 	// locate the segment that contains the entry, binary search
 	segIdx := sort.Search(len(w.segments), func(i int) bool {
 		return w.segments[i].End >= offset

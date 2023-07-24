@@ -6,15 +6,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yeqown/go-wal"
+	wal2 "github.com/yeqown/go-wal/wal"
 )
 
 func example2() {
-	w, err := wal.NewWAL(
-		wal.DefaultConfig(),
-		wal.WithRoot("./testdata/wal"),
-		wal.WithMaxSegments(5),         // 5 segments
-		wal.WithMaxSegmentSize(2*1024), // 2KB
+	w, err := wal2.NewWAL(
+		wal2.DefaultConfig(),
+		wal2.WithRoot("./testdata/wal"),
+		wal2.WithMaxSegments(5),         // 5 segments
+		wal2.WithMaxSegmentSize(2*1024), // 2KB
 	)
 	if err != nil {
 		panic(err)

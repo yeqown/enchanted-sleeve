@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/yeqown/go-wal"
+	wal2 "github.com/yeqown/go-wal/wal"
 )
 
 func main() {
@@ -13,8 +13,8 @@ func main() {
 }
 
 func example() {
-	config := wal.DefaultConfig()
-	w, err := wal.NewWAL(config, wal.WithRoot("./testdata/wal"))
+	config := wal2.DefaultConfig()
+	w, err := wal2.NewWAL(config, wal2.WithRoot("./testdata/wal"))
 	if err != nil {
 		panic(err)
 	}

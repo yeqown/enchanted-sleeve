@@ -152,7 +152,7 @@ func (t *testSuiteWAL) Test_WAL_TruncateBefore_Restore() {
 		b, err := wal2.Read(int64(i))
 		if i <= 50 {
 			t.Require().Error(err)
-			t.Require().Equal(wal2.ErrEntryNotFound, err)
+			t.Require().Equal(ErrEntryNotFound, err)
 		} else {
 			t.Require().NoError(err)
 			t.Require().Equal(getEntry(i), b)
@@ -214,7 +214,7 @@ func (t *testSuiteWAL) Test_WAL_OverThan_MaxSegments() {
 	for i := int64(1); i < oldest; i++ {
 		_, err := wal2.Read(i)
 		t.Require().Error(err)
-		t.Require().Equal(wal2.ErrEntryNotFound, err)
+		t.Require().Equal(ErrEntryNotFound, err)
 	}
 	for i := oldest; i <= latest; i++ {
 		b, err := wal2.Read(i)

@@ -5,4 +5,4 @@ lint:
 	golangci-lint run --timeout 5m -c .golangci.yml
 
 test:
-	go test -v ./... -coverprofile=coverage.out
+	go test -v ./... -coverprofile=c,vxm  overage.out

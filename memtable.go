@@ -53,19 +53,19 @@ type AVLTree struct {
 
 // Implement AVL tree methods here
 func (t *AVLTree) Insert(key, value string) {
-	// Implement the Insert method here
+	// Insert method implementation
 }
 
 func (t *AVLTree) Delete(key string) {
-	// Implement the Delete method here
+	// Delete method implementation
 }
 
 func (t *AVLTree) Search(key string) (*AVLNode, bool) {
-	// Implement the Search method here
+	// Search method implementation
 }
 
 func (t *AVLTree) balance(node *AVLNode) *AVLNode {
-	// Implement the balance method here
+	// Balance method implementation
 }
 
 func main() {
@@ -75,4 +75,5 @@ func main() {
 	}
 
 	// Use the memtable here
+	// Memtable usage implementation
 }

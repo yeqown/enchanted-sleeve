@@ -33,3 +33,10 @@ func (kd *keyDirIndex) set(key []byte, ent *keydirEntry) {
 
 	kd.hashmap[string(key)] = ent
 }
+
+func (kd *keyDirIndex) del(key []byte) {
+	kd.lock.Lock()
+	defer kd.lock.Unlock()
+
+	delete(kd.hashmap, string(key))
+}

@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"strconv"
 
-	wal2 "github.com/yeqown/go-wal/wal"
+	wal2 "github.com/yeqown/enchanted-sleeve/wal"
 )
 
 func main() {
-	//example()
+	// example()
 	example2()
 }
 

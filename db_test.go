@@ -1,9 +1,12 @@
 package esl_test
 
 import (
-	"github.com/stretchr/testify/suite"
-	esl "github.com/yeqown/go-wal"
+	"os"
 	"testing"
+
+	"github.com/stretchr/testify/suite"
+
+	esl "github.com/yeqown/enchanted-sleeve"
 )
 
 type dbTestSuite struct {
@@ -20,6 +23,10 @@ func (su *dbTestSuite) SetupSuite() {
 
 func (su *dbTestSuite) TearDownSuite() {
 	err := su.db.Close()
+	su.Require().NoError(err)
+
+	// clean up, remove testdata dir.
+	err = os.RemoveAll("./testdata")
 	su.Require().NoError(err)
 }
 

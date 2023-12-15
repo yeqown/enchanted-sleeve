@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	wal2 "github.com/yeqown/go-wal/wal"
+	wal2 "github.com/yeqown/enchanted-sleeve/wal"
 )
 
 func example2() {

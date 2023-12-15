@@ -57,6 +57,10 @@ func (ent *kvEntry) bytes() []byte {
 	return data
 }
 
+func (ent *kvEntry) tombstone() bool {
+	return ent.value == nil
+}
+
 func newEntry(key, value []byte) *kvEntry {
 	ent := &kvEntry{
 		crc:         0,
@@ -70,6 +74,26 @@ func newEntry(key, value []byte) *kvEntry {
 	ent.checksum()
 
 	return ent
+}
+
+func newEntryFromHeader(header []byte) (*kvEntry, error) {
+	if len(header) < kvEntry_bytes_fixedBytes {
+		return nil, ErrInvalidEntryHeader
+	}
+
+	ent := &kvEntry{
+		crc:         binary.BigEndian.Uint32(header),
+		tsTimestamp: binary.BigEndian.Uint32(header[kvEntry_bytes_tsTimestampOff:]),
+		keySize:     binary.BigEndian.Uint16(header[kvEntry_bytes_keySizeOff:]),
+		valueSize:   binary.BigEndian.Uint16(header[kvEntry_bytes_valueSizeOff:]),
+		key:         nil,
+		value:       nil,
+	}
+
+	ent.key = make([]byte, ent.keySize)
+	ent.value = make([]byte, ent.valueSize)
+
+	return ent, nil
 }
 
 // keydirEntry is a single keydir entry in an ESL hash index structure.

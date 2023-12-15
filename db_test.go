@@ -31,7 +31,7 @@ func (su *dbTestSuite) TearDownSuite() {
 }
 
 func (su *dbTestSuite) Test_DB_GetSet() {
-	err := su.db.Set([]byte("key"), []byte("value"))
+	err := su.db.Put([]byte("key"), []byte("value"))
 	su.NoError(err)
 
 	value, err := su.db.Get([]byte("key"))

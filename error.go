@@ -1,8 +1,11 @@
 package esl
 
-import "github.com/pkg/errors"
+import (
+	"github.com/pkg/errors"
+)
 
 var (
-	ErrKeyOrValueTooLong = errors.New("key or value is oversize")
-	ErrKeyNotFound       = errors.New("key not found")
+	ErrKeyOrValueTooLong  = errors.New("key or value is oversize")
+	ErrKeyNotFound        = errors.New("key not found")
+	ErrInvalidEntryHeader = errors.New("invalid entry header")
 )

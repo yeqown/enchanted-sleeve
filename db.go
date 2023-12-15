@@ -28,13 +28,18 @@ const (
 // Since it's append-only, so modification and deletion would also append a new
 // entry to overwrite old value.
 type DB struct {
-	// inArchived to protect DB operations while activeFile is archiving.
+	// inArchived to protect DB operations while activeDataFile is archiving.
 	inArchived atomic.Bool
 
-	// TODO: we need a sema to protect DB status field, such as activeFile, activeFileOff, activeFileId, etc.
-	activeFile    *os.File
-	activeFileOff int64
-	activeFileId  uint16
+	// TODO: we need a sema to protect DB status field, such as activeDataFile, activeDataFileOff, activeFileId, etc.
+	activeFileId uint16
+
+	activeDataFile    *os.File
+	activeDataFileOff int64
+	// The hint file for activeDataFile to store the keydir index of activeDataFile,
+	// so that we can quickly restore keyDir from the hint file while db restart or recover from crash.
+	activeHintFile *os.File
+	activeHintOff  int64
 
 	// path is the directory where the DB is stored.
 	path string
@@ -42,7 +47,7 @@ type DB struct {
 	// keyDir is a key-value index for all key-value pairs.
 	keyDir *keyDirIndex
 
-	// compactCommand is a channel to receive compactRoutine command.
+	// compactCommand is a channel to receive startCompactRoutine command.
 	compactCommand chan struct{}
 }
 
@@ -74,21 +79,23 @@ func Open(path string, options ...Option) (*DB, error) {
 	}
 	activeFileId := len(matched)
 
-	return newDB(path, init, uint16(activeFileId), options)
+	return newDB(path, init, uint16(activeFileId), options...)
 }
 
-func newDB(path string, init bool, activeFileId uint16, options []Option) (*DB, error) {
-	if init {
-		activeFileId -= 1
+func newDB(path string, init bool, activeFileId uint16, options ...Option) (*DB, error) {
+	dataFile, dataFileOff, err := openDataFile(path, activeFileId)
+	if err != nil {
+		return nil, errors.New("openDataFile")
 	}
 
-	activeFile, activeFileOff, err := openActiveFile(path, activeFileId)
-	if err != nil {
-		return nil, errors.New("openActiveFile failed")
+	hintFile, hintFileOff, err2 := openHintFile(path, activeFileId)
+	if err2 != nil {
+		return nil, errors.New("openHintFile")
 	}
 
 	keyDir := newKeyDir()
 	if !init {
+		activeFileId -= 1
 		if err = restoreKeyDir(path, keyDir); err != nil {
 			return nil, errors.Wrap(err, "restoreKeyDir")
 		}
@@ -97,35 +104,79 @@ func newDB(path string, init bool, activeFileId uint16, options []Option) (*DB, 
 	db := &DB{
 		inArchived: atomic.Bool{},
 
-		// TODO: add a hint file for activeFile to store the keydir index of activeFile,
-		//      so that we can quickly restore keyDir from the hint file while db restart or recover from crash.
-		activeFile:    activeFile,
-		activeFileOff: activeFileOff,
-		activeFileId:  activeFileId, // activeFileId always be 0.
+		activeFileId:      activeFileId,
+		activeDataFile:    dataFile,
+		activeDataFileOff: dataFileOff,
+		activeHintFile:    hintFile,
+		activeHintOff:     hintFileOff,
 
 		path: path,
 
 		keyDir: keyDir,
+
+		compactCommand: make(chan struct{}, 1),
 	}
 
-	go db.compactRoutine()
+	go db.startCompactRoutine()
 
 	return db, nil
 }
 
-// openActiveFile create a new active file with given fileId which should be
-// formed as 10 digits, for example: 0000000001.esld
-func openActiveFile(path string, fileId uint16) (*os.File, int64, error) {
-	activeFilename := fmt.Sprintf("%010d%s", fileId, dataFileExt)
-	activeFilename = filepath.Join(path, activeFilename)
+func (db *DB) Close() error {
+	if db.activeDataFile != nil {
+		if err := db.activeDataFile.Sync(); err != nil {
+			return errors.Wrap(err, "could not sync file")
+		}
 
-	fd, err := os.OpenFile(activeFilename, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0666)
-	st, err := fd.Stat()
+		if err := db.activeDataFile.Close(); err != nil {
+			return errors.Wrap(err, "could not close file")
+		}
+	}
+
+	if db.activeHintFile != nil {
+		if err := db.activeHintFile.Sync(); err != nil {
+			return errors.Wrap(err, "could not sync hint file")
+		}
+
+		if err := db.activeHintFile.Close(); err != nil {
+			return errors.Wrap(err, "could not close hint file")
+		}
+	}
+
+	return nil
+}
+
+// openDataFile open a data file for writing. If the file is not exist, it
+// creates a new active file with given fileId which should be formed as 10 digits,
+// for example: 0000000001.esld
+func openDataFile(path string, fileId uint16) (*os.File, int64, error) {
+	dataFilename := fmt.Sprintf("%010d%s", fileId, dataFileExt)
+	dataFilename = filepath.Join(path, dataFilename)
+
+	dataFd, err := os.OpenFile(dataFilename, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0666)
+	st, err := dataFd.Stat()
 	if err != nil {
 		return nil, 0, errors.Wrap(err, "read file stat failed")
 	}
 
-	return fd, st.Size(), nil
+	return dataFd, st.Size(), nil
+}
+
+func openHintFile(path string, fileId uint16) (*os.File, int64, error) {
+	hintFilename := fmt.Sprintf("%010d%s", fileId, hintFileExt)
+	hintFilename = filepath.Join(path, hintFilename)
+
+	hintFd, err := os.OpenFile(hintFilename, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0666)
+	if err != nil {
+		return nil, 0, errors.Wrap(err, "open hint file failed")
+	}
+
+	st, err := hintFd.Stat()
+	if err != nil {
+		return nil, 0, errors.Wrap(err, "read file stat failed")
+	}
+
+	return hintFd, st.Size(), nil
 }
 
 // restoreKeyDir restore keyDir from index file. First of all, the restore process
@@ -134,22 +185,22 @@ func openActiveFile(path string, fileId uint16) (*os.File, int64, error) {
 // merge them into a single keyDir.
 func restoreKeyDir(path string, keyDir *keyDirIndex) error {
 	pattern := filepath.Join(path, hintFilePattern)
-	matched, err := filepath.Glob(pattern)
+	hintFiles, err := filepath.Glob(pattern)
 	if err != nil {
 		return errors.Wrap(err, "failed locate hint files")
 	}
-	if len(matched) != 0 {
+	if len(hintFiles) != 0 {
 		// TODO: restore from hint files.
 		println("restore from hint files")
 		return nil
 	}
 
-	dataFilePattern := filepath.Join(path, dataFilePattern)
-	dataFileMatched, err := filepath.Glob(dataFilePattern)
+	pattern = filepath.Join(path, dataFilePattern)
+	dataFiles, err := filepath.Glob(pattern)
 	if err != nil {
 		return errors.Wrap(err, "failed locate data files")
 	}
-	if len(dataFileMatched) == 0 {
+	if len(dataFiles) == 0 {
 		// no data files, no need to restore.
 		return nil
 	}
@@ -164,12 +215,22 @@ func (db *DB) archive() (err error) {
 		return
 	}
 
-	_ = db.activeFile.Sync()
-	_ = db.activeFile.Close()
-	db.activeFile = nil
+	_ = db.activeDataFile.Sync()
+	_ = db.activeDataFile.Close()
+	db.activeDataFile = nil
+
+	_ = db.activeHintFile.Sync()
+	_ = db.activeHintFile.Close()
+	db.activeHintFile = nil
+
 	db.activeFileId++
-	if db.activeFile, db.activeFileOff, err = openActiveFile(db.path, db.activeFileId); err != nil {
-		return errors.Wrap(err, "openActiveFile failed")
+	db.activeDataFile, db.activeDataFileOff, err = openDataFile(db.path, db.activeFileId)
+	if err != nil {
+		return errors.Wrap(err, "openDataFile failed")
+	}
+	db.activeHintFile, db.activeHintOff, err = openHintFile(db.path, db.activeFileId)
+	if err != nil {
+		return errors.Wrap(err, "openHintFile failed")
 	}
 
 	db.inArchived.Store(false)
@@ -183,7 +244,7 @@ const (
 	maxDataFileSize = 100 * 1024 * 1024 // 100MB
 )
 
-func (db *DB) Set(key, value []byte) error {
+func (db *DB) Put(key, value []byte) error {
 	if len(key) > maxKeySize || len(value) > maxValueSize {
 		return ErrKeyOrValueTooLong
 	}
@@ -208,13 +269,13 @@ func (db *DB) buildKeyDir(e *kvEntry) *keydirEntry {
 		fileId:      db.activeFileId,
 		valueSize:   e.valueSize,
 		tsTimestamp: e.tsTimestamp,
-		valuePos:    db.activeFileOff + int64(kvEntry_bytes_keyOff+int(e.keySize)),
+		valuePos:    db.activeDataFileOff + int64(kvEntry_bytes_keyOff+int(e.keySize)),
 	}
 }
 
-// Remove removes the key from the DB. Note that the key is not actually removed from the DB,
+// Delete removes the key from the DB. Note that the key is not actually removed from the DB,
 // but marked as deleted, and the key will be removed from the DB when the DB is compacted.
-func (db *DB) Remove(key []byte) error {
+func (db *DB) Delete(key []byte) error {
 	if dir := db.keyDir.get(key); dir != nil {
 		return nil
 	}
@@ -232,15 +293,15 @@ func (db *DB) write(key []byte, e *kvEntry, keydir *keydirEntry) error {
 		time.Sleep(time.Millisecond)
 	}
 
-	n, err := db.activeFile.Write(e.bytes())
+	n, err := db.activeDataFile.Write(e.bytes())
 	if err != nil {
-		return errors.Wrap(err, "db.Set could not write to file")
+		return errors.Wrap(err, "db.Put could not write to file")
 	}
 
-	db.keyDir.set(key, keydir)   // update keyDir index.
-	db.activeFileOff += int64(n) // step active file offset
+	db.keyDir.set(key, keydir)       // update keyDir index.
+	db.activeDataFileOff += int64(n) // step active file offset
 
-	if db.activeFileOff >= maxDataFileSize {
+	if db.activeDataFileOff >= maxDataFileSize {
 		if err = db.archive(); err != nil {
 			return errors.Wrap(err, "db archive failed")
 		}
@@ -257,7 +318,7 @@ func (db *DB) Get(key []byte) (value []byte, err error) {
 
 	value = make([]byte, clue.valueSize)
 	if clue.fileId == db.activeFileId {
-		_, err = db.activeFile.ReadAt(value, clue.valuePos)
+		_, err = db.activeDataFile.ReadAt(value, clue.valuePos)
 	} else {
 		err = db.readInactiveFile(value, clue)
 	}
@@ -286,8 +347,19 @@ func (db *DB) readInactiveFile(value []byte, clue *keydirEntry) error {
 	return nil
 }
 
-// Compact compacts the DB which is used by developer to reduce disk usage manually.
-func (db *DB) Compact() error {
+type Key []byte
+
+func (db *DB) ListKeys() []Key {
+	keys := make([]Key, 0, len(db.keyDir.hashmap))
+	for key := range db.keyDir.hashmap {
+		keys = append(keys, Key(key))
+	}
+
+	return keys
+}
+
+// Merge compacts the DB which is used by developer to reduce disk usage manually.
+func (db *DB) Merge() error {
 	select {
 	case db.compactCommand <- struct{}{}:
 	default:
@@ -295,53 +367,7 @@ func (db *DB) Compact() error {
 	return nil
 }
 
-// compactRoutine is a routine to compacts the older closed datafiles into one or
-// many merged files having the same structure as the existing datafiles.
-// This way the unused and non-existent keys are ignored from the newer datafiles
-// saving a bunch of disk space. Since the record now exists in a different merged datafile
-// and at a new offset, its entry in KeyDir needs an atomic update.
-func (db *DB) compactRoutine() {
-	ticker := time.NewTicker(time.Second * 30)
-	needCompact := func() bool {
-		// check whether we need to compactRoutine the DB or not.
-		// TODO: finish this admission check function.
-		return false
-	}
-
-	// TODO: compact routine also need to start merge process while disk usage is over than
-	//      the threshold that was configured by developer.
-	for {
-		select {
-		case <-ticker.C:
-			if needCompact() {
-				select {
-				case db.compactCommand <- struct{}{}:
-				default:
-				}
-			}
-			continue
-		case <-db.compactCommand:
-		}
-
-		db.merge()
-	}
-}
-
-func (db *DB) merge() {
-	// TODO: achieve merge function.
-}
-
-func (db *DB) Close() error {
-	if db.activeFile != nil {
-		if err := db.activeFile.Sync(); err != nil {
-			return errors.Wrap(err, "could not sync file")
-		}
-
-		if err := db.activeFile.Close(); err != nil {
-			return errors.Wrap(err, "could not close file")
-		}
-	}
-
-	// TODO: more operations todo here.
-	return nil
+// Sync force any writes to sync to disk
+func (db *DB) Sync() {
+	// TODO:
 }

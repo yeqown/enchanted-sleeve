@@ -35,11 +35,11 @@ type DB struct {
 	activeFileId uint16
 
 	activeDataFile    *os.File
-	activeDataFileOff int64
+	activeDataFileOff uint32
 	// The hint file for activeDataFile to store the keydir index of activeDataFile,
 	// so that we can quickly restore keyDir from the hint file while db restart or recover from crash.
 	activeHintFile *os.File
-	activeHintOff  int64
+	activeHintOff  uint32
 
 	// path is the directory where the DB is stored.
 	path string
@@ -149,24 +149,22 @@ func (db *DB) Close() error {
 // openDataFile open a data file for writing. If the file is not exist, it
 // creates a new active file with given fileId which should be formed as 10 digits,
 // for example: 0000000001.esld
-func openDataFile(path string, fileId uint16) (*os.File, int64, error) {
-	dataFilename := fmt.Sprintf("%010d%s", fileId, dataFileExt)
-	dataFilename = filepath.Join(path, dataFilename)
+func openDataFile(path string, fileId uint16) (*os.File, uint32, error) {
+	dataFName := dataFilename(path, fileId)
 
-	dataFd, err := os.OpenFile(dataFilename, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0666)
+	dataFd, err := os.OpenFile(dataFName, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0666)
 	st, err := dataFd.Stat()
 	if err != nil {
 		return nil, 0, errors.Wrap(err, "read file stat failed")
 	}
 
-	return dataFd, st.Size(), nil
+	return dataFd, uint32(st.Size()), nil
 }
 
-func openHintFile(path string, fileId uint16) (*os.File, int64, error) {
-	hintFilename := fmt.Sprintf("%010d%s", fileId, hintFileExt)
-	hintFilename = filepath.Join(path, hintFilename)
+func openHintFile(path string, fileId uint16) (*os.File, uint32, error) {
+	hintFName := hintFilename(path, fileId)
 
-	hintFd, err := os.OpenFile(hintFilename, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0666)
+	hintFd, err := os.OpenFile(hintFName, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0666)
 	if err != nil {
 		return nil, 0, errors.Wrap(err, "open hint file failed")
 	}
@@ -176,7 +174,7 @@ func openHintFile(path string, fileId uint16) (*os.File, int64, error) {
 		return nil, 0, errors.Wrap(err, "read file stat failed")
 	}
 
-	return hintFd, st.Size(), nil
+	return hintFd, uint32(st.Size()), nil
 }
 
 // restoreKeyDir restore keyDir from index file. First of all, the restore process
@@ -269,7 +267,7 @@ func (db *DB) buildKeyDir(e *kvEntry) *keydirEntry {
 		fileId:      db.activeFileId,
 		valueSize:   e.valueSize,
 		tsTimestamp: e.tsTimestamp,
-		valuePos:    db.activeDataFileOff + int64(kvEntry_bytes_keyOff+int(e.keySize)),
+		valueOffset: db.activeDataFileOff + uint32(kvEntry_bytes_keyOff+uint32(e.keySize)),
 	}
 }
 
@@ -298,8 +296,8 @@ func (db *DB) write(key []byte, e *kvEntry, keydir *keydirEntry) error {
 		return errors.Wrap(err, "db.Put could not write to file")
 	}
 
-	db.keyDir.set(key, keydir)       // update keyDir index.
-	db.activeDataFileOff += int64(n) // step active file offset
+	db.keyDir.set(key, keydir)        // update keyDir index.
+	db.activeDataFileOff += uint32(n) // step active file offset
 
 	if db.activeDataFileOff >= maxDataFileSize {
 		if err = db.archive(); err != nil {
@@ -318,7 +316,7 @@ func (db *DB) Get(key []byte) (value []byte, err error) {
 
 	value = make([]byte, clue.valueSize)
 	if clue.fileId == db.activeFileId {
-		_, err = db.activeDataFile.ReadAt(value, clue.valuePos)
+		_, err = db.activeDataFile.ReadAt(value, int64(clue.valueOffset))
 	} else {
 		err = db.readInactiveFile(value, clue)
 	}
@@ -340,7 +338,7 @@ func (db *DB) readInactiveFile(value []byte, clue *keydirEntry) error {
 		return errors.Wrap(err, "open file failed")
 	}
 
-	if _, err = fd.ReadAt(value, clue.valuePos); err != nil {
+	if _, err = fd.ReadAt(value, int64(clue.valueOffset)); err != nil {
 		return errors.Wrap(err, "read file failed")
 	}
 
@@ -370,4 +368,12 @@ func (db *DB) Merge() error {
 // Sync force any writes to sync to disk
 func (db *DB) Sync() {
 	// TODO:
+}
+
+func dataFilename(path string, fileId uint16) string {
+	return fmt.Sprintf("%010d%s", fileId, dataFileExt)
+}
+
+func hintFilename(path string, fileId uint16) string {
+	return fmt.Sprintf("%010d%s", fileId, hintFileExt)
 }

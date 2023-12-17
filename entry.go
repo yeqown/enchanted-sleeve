@@ -57,6 +57,7 @@ func (ent *kvEntry) bytes() []byte {
 	return data
 }
 
+// tombstone indicates the kvEntry contains a tombstone value.
 func (ent *kvEntry) tombstone() bool {
 	return ent.value == nil
 }
@@ -76,7 +77,7 @@ func newEntry(key, value []byte) *kvEntry {
 	return ent
 }
 
-func newEntryFromHeader(header []byte) (*kvEntry, error) {
+func decodeEntryFromHeader(header []byte) (*kvEntry, error) {
 	if len(header) < kvEntry_bytes_fixedBytes {
 		return nil, ErrInvalidEntryHeader
 	}
@@ -100,6 +101,22 @@ func newEntryFromHeader(header []byte) (*kvEntry, error) {
 type keydirEntry struct {
 	fileId      uint16
 	valueSize   uint16
-	tsTimestamp uint32
-	valuePos    int64
+	tsTimestamp uint32 // TODO: what's the purpose of tsTimestamp?
+	entryOffset uint32 // uint32 is enough since maxDataFileSize is 100MB
+	valueOffset uint32 // uint32 is enough since maxDataFileSize is 100MB
+}
+
+func (e keydirEntry) bytes() []byte {
+	data := make([]byte, 16)
+	binary.BigEndian.PutUint16(data, e.fileId)
+	binary.BigEndian.PutUint16(data[2:], e.valueSize)
+	binary.BigEndian.PutUint32(data[4:], e.tsTimestamp)
+	binary.BigEndian.PutUint64(data[8:], uint64(e.valueOffset))
+	binary.BigEndian.PutUint64(data[12:], uint64(e.entryOffset))
+
+	return data
+}
+
+func (e keydirEntry) size() int {
+	return 16
 }

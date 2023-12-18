@@ -2,13 +2,14 @@ package esl
 
 import (
 	"fmt"
-	"github.com/pkg/errors"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 	"unsafe"
+
+	"github.com/pkg/errors"
 )
 
 // startCompactRoutine is a routine to compacts the older closed datafiles into one or
@@ -74,7 +75,7 @@ func (db *DB) mergeFiles() error {
 
 	// loop datafiles(from the newest to the oldest) to merge.
 	for _, filename := range orderedFilenames {
-		kvs, err2 := readDataFile(filename)
+		kvs, _, err2 := readDataFile(filename)
 		if err2 != nil {
 			return errors.Wrap(err2, "readDataFile "+filename)
 		}
@@ -100,55 +101,69 @@ func (db *DB) mergeFiles() error {
 	return writeMergeFileAndHint(db.path, db.activeFileId+1, alive)
 }
 
-func readDataFile(filename string) ([]*kvEntry, error) {
+func readDataFile(filename string) ([]*kvEntry, map[string]*keydirMemEntry, error) {
 	fd, err := os.OpenFile(filename, os.O_RDONLY, 0666)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+
+	fileId, _ := fileIdFromFilename(filename)
 
 	// TODO: determine the size of datafile, so we can allocate a buffer to read all data
 	//       from datafile at once.
-	entries := make([]*kvEntry, 0, 1024)
 	pos := int64(0)
-	header := make([]byte, kvEntry_bytes_fixedBytes)
+	entries := make([]*kvEntry, 0, 1024)
+	keydirs := make(map[string]*keydirMemEntry, 1024)
+	header := make([]byte, kvEntry_fixedBytes)
 	fi, err := fd.Stat()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	for pos >= fi.Size() {
+	for pos < fi.Size() {
+		keydir := &keydirMemEntry{
+			fileId:      fileId,
+			valueSize:   0,           // set it later
+			entryOffset: uint32(pos), //
+			valueOffset: 0,           // set it later
+		}
+
 		// read fixed entry header.
 		n, err2 := fd.ReadAt(header, pos)
-		if err != nil || n != kvEntry_bytes_fixedBytes {
-			return nil, err2
+		if err != nil || n != kvEntry_fixedBytes {
+			return nil, nil, err2
 		}
 
 		entry, err3 := decodeEntryFromHeader(header)
 		if err3 != nil {
-			return nil, err3
+			return nil, nil, err3
 		}
 
 		// read key.
-		pos += kvEntry_bytes_fixedBytes
+		pos += kvEntry_fixedBytes
 		n, err2 = fd.ReadAt(entry.key, pos)
 		if err != nil || n != int(entry.keySize) {
-			return nil, err2
+			return nil, nil, err2
 		}
 
 		// read value.
 		pos += int64(entry.keySize)
+		keydir.valueOffset = uint32(pos)
+		keydir.valueSize = entry.valueSize
+
 		n, err2 = fd.ReadAt(entry.value, pos)
 		if err != nil || n != int(entry.valueSize) {
-			return nil, err2
+			return nil, nil, err2
 		}
 
 		entries = append(entries, entry)
+		keydirs[unsafe.String(&entry.key[0], int(entry.keySize))] = keydir
 
 		// step to next entry.
 		pos += int64(entry.valueSize)
 	}
 
-	return entries, nil
+	return entries, keydirs, nil
 }
 
 // DONE: what if the datafile is too large to write into one file
@@ -195,7 +210,7 @@ func writeMergeFileAndHint(path string, fileId uint16, aliveEntries map[string]*
 	valueOff := uint32(0)
 	entryOff := uint32(0)
 	var (
-		keydir *keydirEntry
+		keydir *keydirFileEntry
 		n      int
 	)
 	for _, entry := range aliveEntries {
@@ -203,13 +218,17 @@ func writeMergeFileAndHint(path string, fileId uint16, aliveEntries map[string]*
 			// TODO: handle err
 			panic(err)
 		}
-		valueOff = entryOff + kvEntry_bytes_fixedBytes + uint32(entry.keySize)
-		keydir = &keydirEntry{
-			fileId:      fileId,
-			valueSize:   entry.valueSize,
-			tsTimestamp: entry.tsTimestamp,
-			valueOffset: valueOff,
-			entryOffset: entryOff,
+		valueOff = entryOff + kvEntry_fixedBytes + uint32(entry.keySize)
+
+		keydir = &keydirFileEntry{
+			keydirMemEntry: keydirMemEntry{
+				fileId:      fileId,
+				valueSize:   entry.valueSize,
+				valueOffset: valueOff,
+				entryOffset: entryOff,
+			},
+			keySize: entry.keySize,
+			key:     entry.key,
 		}
 		if _, err = hintFile.Write(keydir.bytes()); err != nil {
 			// TODO: handle err
@@ -237,4 +256,46 @@ func writeMergeFileAndHint(path string, fileId uint16, aliveEntries map[string]*
 	closeFn()
 
 	return nil
+}
+
+func readHintFile(filename string) ([]*keydirFileEntry, error) {
+	fd, err := os.OpenFile(filename, os.O_RDONLY, 0666)
+	if err != nil {
+		return nil, err
+	}
+
+	keydirFileEntries := make([]*keydirFileEntry, 0, 1024)
+	pos := int64(0)
+	header := make([]byte, keydirFile_fixedSize)
+	fi, err := fd.Stat()
+	if err != nil {
+		return nil, err
+	}
+
+	for pos < fi.Size() {
+		// read fixed keydir header.
+		n, err2 := fd.ReadAt(header, pos)
+		if err != nil || n != keydirFile_fixedSize {
+			return nil, err2
+		}
+
+		keydir, err3 := decodeKeydirFileEntry(header)
+		if err3 != nil {
+			return nil, err3
+		}
+
+		// read key.
+		pos += keydirFile_fixedSize
+		n, err2 = fd.ReadAt(keydir.key, pos)
+		if err != nil || n != int(keydir.keySize) {
+			return nil, err2
+		}
+
+		keydirFileEntries = append(keydirFileEntries, keydir)
+
+		// step to next keydir.
+		pos += int64(keydir.keySize)
+	}
+
+	return keydirFileEntries, nil
 }

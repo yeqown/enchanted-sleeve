@@ -1,11 +1,10 @@
 package esl
 
 import (
-	"fmt"
 	"os"
-	"path/filepath"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"github.com/pkg/errors"
 )
@@ -36,16 +35,16 @@ type DB struct {
 
 	activeDataFile    *os.File
 	activeDataFileOff uint32
-	// The hint file for activeDataFile to store the keydir index of activeDataFile,
-	// so that we can quickly restore keyDir from the hint file while db restart or recover from crash.
-	activeHintFile *os.File
-	activeHintOff  uint32
+	// // The hint file for activeDataFile to store the keydir index of activeDataFile,
+	// // so that we can quickly restore keyDir from the hint file while db restart or recover from crash.
+	// activeHintFile *os.File
+	// activeHintOff  uint32
 
 	// path is the directory where the DB is stored.
 	path string
 
 	// keyDir is a key-value index for all key-value pairs.
-	keyDir *keyDirIndex
+	keyDir *keydirMemTable
 
 	// compactCommand is a channel to receive startCompactRoutine command.
 	compactCommand chan struct{}
@@ -53,51 +52,30 @@ type DB struct {
 
 // Open create or restore from the path.
 func Open(path string, options ...Option) (*DB, error) {
+	if err := ensurePath(path); err != nil {
+		return nil, errors.Wrap(err, "Open ensurePath failed")
+	}
 
-	init := false
-	_, err := os.Stat(path)
+	snap, err := takeDBPathSnap(path)
 	if err != nil {
-		if !os.IsNotExist(err) {
-			return nil, err
-		}
-
-		init = true
-		if err = os.MkdirAll(path, 0666); err != nil {
-			return nil, err
-		}
+		return nil, errors.Wrap(err, "Open takeDBPathSnap")
 	}
 
-	// if the path is empty, init should be true too.
-	pattern := filepath.Join(path, dataFilePattern)
-	matched, err := filepath.Glob(pattern)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(matched) == 0 {
-		init = true
-	}
-	activeFileId := len(matched)
-
-	return newDB(path, init, uint16(activeFileId), options...)
+	return newDB(path, snap, options...)
 }
 
-func newDB(path string, init bool, activeFileId uint16, options ...Option) (*DB, error) {
+func newDB(path string, snap *dbPathSnap, options ...Option) (*DB, error) {
+
+	activeFileId := snap.lastDataFileId
 	dataFile, dataFileOff, err := openDataFile(path, activeFileId)
 	if err != nil {
-		return nil, errors.New("openDataFile")
-	}
-
-	hintFile, hintFileOff, err2 := openHintFile(path, activeFileId)
-	if err2 != nil {
-		return nil, errors.New("openHintFile")
+		return nil, errors.Wrap(err, "openDataFile")
 	}
 
 	keyDir := newKeyDir()
-	if !init {
-		activeFileId -= 1
-		if err = restoreKeyDir(path, keyDir); err != nil {
-			return nil, errors.Wrap(err, "restoreKeyDir")
+	if !snap.isEmpty() {
+		if err = restoreKeydirIndex(snap, keyDir); err != nil {
+			return nil, errors.Wrap(err, "restoreKeydirIndex")
 		}
 	}
 
@@ -107,8 +85,6 @@ func newDB(path string, init bool, activeFileId uint16, options ...Option) (*DB,
 		activeFileId:      activeFileId,
 		activeDataFile:    dataFile,
 		activeDataFileOff: dataFileOff,
-		activeHintFile:    hintFile,
-		activeHintOff:     hintFileOff,
 
 		path: path,
 
@@ -133,15 +109,15 @@ func (db *DB) Close() error {
 		}
 	}
 
-	if db.activeHintFile != nil {
-		if err := db.activeHintFile.Sync(); err != nil {
-			return errors.Wrap(err, "could not sync hint file")
-		}
-
-		if err := db.activeHintFile.Close(); err != nil {
-			return errors.Wrap(err, "could not close hint file")
-		}
-	}
+	// if db.activeHintFile != nil {
+	// 	if err := db.activeHintFile.Sync(); err != nil {
+	// 		return errors.Wrap(err, "could not sync hint file")
+	// 	}
+	//
+	// 	if err := db.activeHintFile.Close(); err != nil {
+	// 		return errors.Wrap(err, "could not close hint file")
+	// 	}
+	// }
 
 	return nil
 }
@@ -152,9 +128,13 @@ func (db *DB) Close() error {
 func openDataFile(path string, fileId uint16) (*os.File, uint32, error) {
 	dataFName := dataFilename(path, fileId)
 
-	dataFd, err := os.OpenFile(dataFName, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0666)
+	dataFd, err := os.OpenFile(dataFName, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0644)
+	if err != nil {
+		return nil, 0, errors.Wrap(err, "open data file failed")
+	}
 	st, err := dataFd.Stat()
 	if err != nil {
+		_ = dataFd.Close()
 		return nil, 0, errors.Wrap(err, "read file stat failed")
 	}
 
@@ -164,46 +144,76 @@ func openDataFile(path string, fileId uint16) (*os.File, uint32, error) {
 func openHintFile(path string, fileId uint16) (*os.File, uint32, error) {
 	hintFName := hintFilename(path, fileId)
 
-	hintFd, err := os.OpenFile(hintFName, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0666)
+	hintFd, err := os.OpenFile(hintFName, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0644)
 	if err != nil {
 		return nil, 0, errors.Wrap(err, "open hint file failed")
 	}
 
 	st, err := hintFd.Stat()
 	if err != nil {
+		_ = hintFd.Close()
 		return nil, 0, errors.Wrap(err, "read file stat failed")
 	}
 
 	return hintFd, uint32(st.Size()), nil
 }
 
-// restoreKeyDir restore keyDir from index file. First of all, the restore process
+// restoreKeydirIndex restore keyDir from index file. First of all, the restore process
 // will try scan all hint files and merge them into a single keyDir. But if the
 // hint files are not found, the restore process will scan all data files and
 // merge them into a single keyDir.
-func restoreKeyDir(path string, keyDir *keyDirIndex) error {
-	pattern := filepath.Join(path, hintFilePattern)
-	hintFiles, err := filepath.Glob(pattern)
-	if err != nil {
-		return errors.Wrap(err, "failed locate hint files")
-	}
-	if len(hintFiles) != 0 {
-		// TODO: restore from hint files.
-		println("restore from hint files")
+func restoreKeydirIndex(snap *dbPathSnap, keyDir *keydirMemTable) error {
+	hintFileIds := make(map[uint16]struct{}, len(snap.hintFiles))
+	if len(snap.hintFiles) != 0 {
+		for _, hintFile := range snap.hintFiles {
+			fileId, err := fileIdFromFilename(hintFile)
+			if err != nil {
+				// skip invalid hint file
+				continue
+			}
+			hintFileIds[fileId] = struct{}{}
+
+			keydirs, err := readHintFile(hintFile)
+			if err != nil {
+				return errors.Wrap(err, "read hint file failed")
+			}
+
+			for _, keydir := range keydirs {
+				keyDir.set(keydir.key, &keydir.keydirMemEntry)
+			}
+		}
 		return nil
 	}
 
-	pattern = filepath.Join(path, dataFilePattern)
-	dataFiles, err := filepath.Glob(pattern)
-	if err != nil {
-		return errors.Wrap(err, "failed locate data files")
-	}
-	if len(dataFiles) == 0 {
-		// no data files, no need to restore.
+	if len(snap.dataFiles) != 0 {
+		for _, filename := range snap.dataFiles {
+			fileId, err := fileIdFromFilename(filename)
+			if err != nil {
+				println("could not parse data file, ", err.Error())
+				continue
+			}
+			// Range data files and merge them into keyDir. if the data file has related hint file,
+			// we can skip the data file.
+			if _, exists := hintFileIds[fileId]; exists {
+				continue
+			}
+
+			kvs, keydirs, err := readDataFile(filename)
+			if err != nil {
+				return errors.Wrap(err, "readDataFile "+filename)
+			}
+
+			// FIXED: keydirMemEntry should be created while reading data file,
+			//  calculate from the offset is not precise and safe.
+			off := uint32(0)
+			for _, kv := range kvs {
+				keyDir.set(kv.key, keydirs[unsafe.String(&kv.key[0], len(kv.key))])
+				off += kvEntry_fixedBytes + uint32(kv.keySize) + uint32(kv.valueSize)
+			}
+		}
+
 		return nil
 	}
-	// TODO: restore from data files.
-	println("restore from data files")
 
 	return nil
 }
@@ -217,19 +227,19 @@ func (db *DB) archive() (err error) {
 	_ = db.activeDataFile.Close()
 	db.activeDataFile = nil
 
-	_ = db.activeHintFile.Sync()
-	_ = db.activeHintFile.Close()
-	db.activeHintFile = nil
+	// _ = db.activeHintFile.Sync()
+	// _ = db.activeHintFile.Close()
+	// db.activeHintFile = nil
 
 	db.activeFileId++
 	db.activeDataFile, db.activeDataFileOff, err = openDataFile(db.path, db.activeFileId)
 	if err != nil {
 		return errors.Wrap(err, "openDataFile failed")
 	}
-	db.activeHintFile, db.activeHintOff, err = openHintFile(db.path, db.activeFileId)
-	if err != nil {
-		return errors.Wrap(err, "openHintFile failed")
-	}
+	// db.activeHintFile, db.activeHintOff, err = openHintFile(db.path, db.activeFileId)
+	// if err != nil {
+	// 	return errors.Wrap(err, "openHintFile failed")
+	// }
 
 	db.inArchived.Store(false)
 	return nil
@@ -253,7 +263,7 @@ func (db *DB) Put(key, value []byte) error {
 	return db.write(key, entry, keydir)
 }
 
-func (db *DB) buildKeyDir(e *kvEntry) *keydirEntry {
+func (db *DB) buildKeyDir(e *kvEntry) *keydirMemEntry {
 	if e == nil {
 		return nil
 	}
@@ -263,11 +273,11 @@ func (db *DB) buildKeyDir(e *kvEntry) *keydirEntry {
 		time.Sleep(time.Millisecond)
 	}
 
-	return &keydirEntry{
+	return &keydirMemEntry{
 		fileId:      db.activeFileId,
 		valueSize:   e.valueSize,
-		tsTimestamp: e.tsTimestamp,
-		valueOffset: db.activeDataFileOff + uint32(kvEntry_bytes_keyOff+uint32(e.keySize)),
+		entryOffset: db.activeDataFileOff,
+		valueOffset: db.activeDataFileOff + kvEntry_keyOff + uint32(e.keySize),
 	}
 }
 
@@ -285,7 +295,7 @@ func (db *DB) Delete(key []byte) error {
 }
 
 // write to activate file and update keyDir index.
-func (db *DB) write(key []byte, e *kvEntry, keydir *keydirEntry) error {
+func (db *DB) write(key []byte, e *kvEntry, keydir *keydirMemEntry) error {
 	for db.inArchived.Load() {
 		// spin to wait for archiving finish
 		time.Sleep(time.Millisecond)
@@ -309,47 +319,103 @@ func (db *DB) write(key []byte, e *kvEntry, keydir *keydirEntry) error {
 }
 
 func (db *DB) Get(key []byte) (value []byte, err error) {
+	entry, err := db.get(key, true)
+	if err != nil {
+		return nil, err
+	}
+
+	return entry.value, nil
+}
+
+func (db *DB) get(key []byte, quick bool) (entry *kvEntry, err error) {
 	clue := db.keyDir.get(key)
 	if clue == nil {
 		return nil, ErrKeyNotFound
 	}
 
-	value = make([]byte, clue.valueSize)
+	var fd *os.File
 	if clue.fileId == db.activeFileId {
-		_, err = db.activeDataFile.ReadAt(value, int64(clue.valueOffset))
+		fd = db.activeDataFile
 	} else {
-		err = db.readInactiveFile(value, clue)
+		fd, err = db.openInactiveFile(clue)
+		if err != nil {
+			return nil, errors.Wrap(err, "open inactive file failed")
+		}
 	}
 
+	if quick {
+		entry = new(kvEntry)
+		entry.value, err = readValueOnly(fd, clue)
+	} else {
+		entry, err = readEntryEntire(fd, clue)
+	}
 	if err != nil {
+		return nil, errors.Wrap(err, "read entry failed")
+	}
+
+	return entry, nil
+}
+
+func readEntryEntire(file *os.File, clue *keydirMemEntry) (*kvEntry, error) {
+	// TODO: use buffer pool to reduce memory allocation.
+	header := make([]byte, kvEntry_fixedBytes)
+	n, err := file.ReadAt(header, int64(clue.entryOffset))
+	if err != nil || n != kvEntry_fixedBytes {
 		return nil, errors.Wrap(err, "read from file failed")
 	}
 
-	// TODO: check crc32 checksum.
+	entry, err := decodeEntryFromHeader(header)
+	if err != nil {
+		return nil, errors.Wrap(err, "decode entry from header failed")
+	}
+
+	// read key.
+	n, err = file.ReadAt(entry.key, int64(clue.entryOffset+kvEntry_fixedBytes))
+	if err != nil || n != int(entry.keySize) {
+		return nil, errors.Wrap(err, "read from file failed")
+	}
+
+	// read value.
+	n, err = file.ReadAt(entry.value, int64(clue.entryOffset+kvEntry_fixedBytes+uint32(entry.keySize)))
+	if err != nil || n != int(entry.valueSize) {
+		return nil, errors.Wrap(err, "read from file failed")
+	}
+
+	// DONE: check entry crc to ensure the entry is not corrupted.
+	if entry.crc != checksum(entry) {
+		return nil, ErrEntryCorrupted
+	}
+
+	return entry, nil
+}
+
+func readValueOnly(file *os.File, clue *keydirMemEntry) ([]byte, error) {
+	value := make([]byte, clue.valueSize)
+	n, err := file.ReadAt(value, int64(clue.valueOffset))
+	if err != nil || n != int(clue.valueSize) {
+		return nil, errors.Wrap(err, "read from file failed")
+	}
 
 	return value, nil
 }
 
+// openInactiveFile open inactive file for reading.
 // TODO: add cache pool to reduce file open/close operations.
-func (db *DB) readInactiveFile(value []byte, clue *keydirEntry) error {
-	filename := fmt.Sprintf("%10d", clue.fileId)
+func (db *DB) openInactiveFile(clue *keydirMemEntry) (*os.File, error) {
+	filename := dataFilename(db.path, clue.fileId)
 	fd, err := os.OpenFile(filename, os.O_RDONLY, 0666)
 	if err != nil {
-		return errors.Wrap(err, "open file failed")
+		return nil, errors.Wrap(err, "open file failed")
 	}
 
-	if _, err = fd.ReadAt(value, int64(clue.valueOffset)); err != nil {
-		return errors.Wrap(err, "read file failed")
-	}
-
-	return nil
+	return fd, nil
 }
 
 type Key []byte
 
 func (db *DB) ListKeys() []Key {
-	keys := make([]Key, 0, len(db.keyDir.hashmap))
-	for key := range db.keyDir.hashmap {
+	keys := make([]Key, 0, len(db.keyDir.indexes))
+	for key := range db.keyDir.indexes {
 		keys = append(keys, Key(key))
 	}
 
@@ -368,12 +434,4 @@ func (db *DB) Merge() error {
 // Sync force any writes to sync to disk
 func (db *DB) Sync() {
 	// TODO:
-}
-
-func dataFilename(path string, fileId uint16) string {
-	return fmt.Sprintf("%010d%s", fileId, dataFileExt)
-}
-
-func hintFilename(path string, fileId uint16) string {
-	return fmt.Sprintf("%010d%s", fileId, hintFileExt)
 }

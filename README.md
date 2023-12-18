@@ -1,8 +1,8 @@
 # enchanted-sleeve
 
-[![Run Tests](https://github.com/yeqown/enchanted-sleeve/actions/workflows/cli.yml/badge.svg)](https://github.com/yeqown/enchanted-sleeve/actions/workflows/cli.yml)
-[![Go Reference](https://pkg.go.dev/badge/github.com/yeqown/enchanted-sleeve/v3.svg)](https://pkg.go.dev/github.com/yeqown/enchanted-sleeve/v3)
-[![Go Report Card](https://goreportcard.com/badge/github.com/yeqown/enchanted-sleeve/v3)](https://goreportcard.com/report/github.com/yeqown/enchanted-sleeve/v3)
+[![Run Tests](https://github.com/yeqown/enchanted-sleeve/actions/workflows/go.yml/badge.svg)](https://github.com/yeqown/enchanted-sleeve/actions/workflows/go.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/yeqown/enchanted-sleeve.svg)](https://pkg.go.dev/github.com/yeqown/enchanted-sleeve)
+[![Go Report Card](https://goreportcard.com/badge/github.com/yeqown/enchanted-sleeve)](https://goreportcard.com/report/github.com/yeqown/enchanted-sleeve)
 [![codecov](https://codecov.io/gh/yeqown/enchanted-sleeve/branch/main/graph/badge.svg?token=t9YGWLh05g)](https://codecov.io/gh/yeqown/enchanted-sleeve)
 
 enchanted-sleeve is a KV store that uses a file as a backend. It is a simple

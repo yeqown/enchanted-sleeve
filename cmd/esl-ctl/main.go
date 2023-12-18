@@ -12,9 +12,9 @@ import (
 // Usage:
 // $ esl-ctl sub-command [global flags] [sub-command flags] [args...]
 // It has sub-commands:
-// - get: esl-ctl get [global flags] key
-// - set: esl-ctl set [global flags] key value
-// - del: esl-ctl del [global flags] key
+// - get:  esl-ctl get  [global flags] key
+// - set:  esl-ctl set  [global flags] key value
+// - del:  esl-ctl del  [global flags] key
 // - keys: esl-ctl keys [global flags]
 //
 // Global flags:
@@ -32,12 +32,6 @@ func newCliApp() *cli.App {
 	app.Name = "esl-ctl"
 	app.Usage = "enchanted-sleeve control tool"
 	app.Version = "0.0.1"
-	app.Commands = []*cli.Command{
-		newGetCommand(),
-		newSetCommand(),
-		newDelCommand(),
-		newKeysCommand(),
-	}
 	app.Before = func(c *cli.Context) error {
 		dbpath := c.String("path")
 		db, err := esl.Open(dbpath)
@@ -45,8 +39,9 @@ func newCliApp() *cli.App {
 			return err
 		}
 
-		_ = db
-		// TODO: set db into context
+		// set into context
+		c.Context = contextWithDB(c.Context, db)
+
 		return nil
 	}
 	// global flags
@@ -55,22 +50,40 @@ func newCliApp() *cli.App {
 			Name:     "path",
 			Aliases:  []string{"p"},
 			Usage:    "path to db",
-			Value:    "./testdata",
+			Value:    "./esldb",
 			Required: true,
 		},
+	}
+
+	app.Commands = []*cli.Command{
+		newGetCommand(),
+		newSetCommand(),
+		newDelCommand(),
+		newKeysCommand(),
 	}
 
 	return app
 }
 
 func newGetCommand() *cli.Command {
-	var db *esl.DB
-	_ = db
 	return &cli.Command{
-		Name:  "get",
-		Usage: "get value by the input key",
+		Name:            "get",
+		Usage:           "read key-value pair from db",
+		ArgsUsage:       `[key]`,
+		SkipFlagParsing: true,
 		Action: func(c *cli.Context) error {
-			fmt.Println("get command running")
+			db := dbFromContext(c.Context)
+			key := c.Args().First()
+			if key == "" {
+				return fmt.Errorf("key is empty")
+			}
+
+			value, err := db.Get([]byte(key))
+			if err != nil {
+				return err
+			}
+
+			fmt.Printf("key: %s, value: %s\n", key, value)
 			return nil
 		},
 	}
@@ -80,8 +93,21 @@ func newSetCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "set",
 		Usage: "set key-value pair",
+		ArgsUsage: `key: key to set value into db
+value: value to set into db`,
 		Action: func(c *cli.Context) error {
-			fmt.Println("set command running")
+			db := dbFromContext(c.Context)
+			key := c.Args().Get(0)
+			value := c.Args().Get(1)
+			if key == "" || value == "" {
+				return fmt.Errorf("key or value is empty")
+			}
+
+			if err := db.Put([]byte(key), []byte(value)); err != nil {
+				return err
+			}
+
+			fmt.Printf("set key: %s, value: %s\n", key, value)
 			return nil
 		},
 	}
@@ -92,7 +118,17 @@ func newDelCommand() *cli.Command {
 		Name:  "del",
 		Usage: "delete key-value pair",
 		Action: func(c *cli.Context) error {
-			fmt.Println("del command running")
+			db := dbFromContext(c.Context)
+			key := c.Args().First()
+			if key == "" {
+				return fmt.Errorf("key is empty")
+			}
+
+			if err := db.Delete([]byte(key)); err != nil {
+				return err
+			}
+
+			fmt.Printf("delete key: %s\n", key)
 			return nil
 		},
 	}
@@ -103,7 +139,13 @@ func newKeysCommand() *cli.Command {
 		Name:  "keys",
 		Usage: "list all keys",
 		Action: func(c *cli.Context) error {
-			fmt.Println("keys command running")
+			db := dbFromContext(c.Context)
+			keys := db.ListKeys()
+
+			fmt.Printf("keys: \n")
+			for _, key := range keys {
+				fmt.Printf("\t%s\n", key)
+			}
 			return nil
 		},
 	}

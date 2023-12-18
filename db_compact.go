@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 	"unsafe"
 
@@ -58,24 +57,38 @@ func (db *DB) mergeFiles() error {
 		return err
 	}
 
-	orderedFilenames := make([]string, 0, len(matched))
-	activeDataFilename := dataFilename(db.path, db.activeFileId)
+	orderedFileIds := make([]int, 0, len(matched))
 	for _, filename := range matched {
-		if strings.EqualFold(filename, activeDataFilename) {
-			println("skip active datafile")
-			continue
+		fileId, err := fileIdFromFilename(filename)
+		if err != nil {
+			return errors.Wrap(err, "takeDBPathSnap parse data file id")
 		}
-		orderedFilenames = append(orderedFilenames, filename)
+		orderedFileIds = append(orderedFileIds, int(fileId))
 	}
+	sort.Sort(sort.Reverse(sort.IntSlice(orderedFileIds)))
 
-	sort.Sort(sort.Reverse(sort.StringSlice(orderedFilenames)))
+	// orderedFilenames := make([]string, 0, len(matched))
+	// activeDataFilename := dataFilename(db.path, db.activeFileId)
+	// for _, filename := range matched {
+	// 	if strings.EqualFold(filename, activeDataFilename) {
+	// 		println("skip active datafile")
+	// 		continue
+	// 	}
+	// 	orderedFilenames = append(orderedFilenames, filename)
+	// }
+	// sort.Sort(sort.Reverse(sort.StringSlice(orderedFilenames)))
 
 	tombstone := make(map[string]struct{}, 1024)
 	alive := make(map[string]*kvEntry, 1024)
 
 	// loop datafiles(from the newest to the oldest) to merge.
-	for _, filename := range orderedFilenames {
-		kvs, _, err2 := readDataFile(filename)
+	for _, fileId := range orderedFileIds {
+		if fileId == int(db.activeFileId) {
+			continue
+		}
+
+		filename := dataFilename(db.path, uint16(fileId))
+		kvs, _, err2 := readDataFile(filename, uint16(fileId))
 		if err2 != nil {
 			return errors.Wrap(err2, "readDataFile "+filename)
 		}
@@ -97,17 +110,14 @@ func (db *DB) mergeFiles() error {
 		}
 	}
 
-	// mergedFilename := filepath.Join(db.path, fmt.Sprintf("%10d%s", db.activeFileId+1, dataFileExt))
 	return db.writeMergeFileAndHint(db.activeFileId+1, alive)
 }
 
-func readDataFile(filename string) ([]*kvEntry, map[string]*keydirMemEntry, error) {
+func readDataFile(filename string, fileId uint16) ([]*kvEntry, map[string]*keydirMemEntry, error) {
 	fd, err := os.OpenFile(filename, os.O_RDONLY, 0666)
 	if err != nil {
 		return nil, nil, err
 	}
-
-	fileId, _ := fileIdFromFilename(filename)
 
 	// TODO: determine the size of datafile, so we can allocate a buffer to read all data
 	//       from datafile at once.

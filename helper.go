@@ -22,8 +22,8 @@ func hintFilename(path string, fileId uint16) string {
 
 // fileIdFromFilename parse file id from filename.
 // e.g.
-// 0000000001.esld -> 1
-// path/to/0000000002.esld -> 2
+// - 0000000001.esld         -> 1
+// - path/to/0000000002.esld -> 2
 func fileIdFromFilename(filename string) (uint16, error) {
 	_, name := filepath.Split(filename)
 

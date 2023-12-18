@@ -81,12 +81,12 @@ func (kd *keydirMemTable) set(key []byte, ent *keydirMemEntry) {
 	kd.indexes[string(key)] = ent
 }
 
-func (kd *keydirMemTable) del(key []byte) {
-	kd.lock.Lock()
-	defer kd.lock.Unlock()
-
-	delete(kd.indexes, string(key))
-}
+// func (kd *keydirMemTable) del(key []byte) {
+// 	kd.lock.Lock()
+// 	defer kd.lock.Unlock()
+//
+// 	delete(kd.indexes, string(key))
+// }
 
 type keydirFileEntry struct {
 	keydirMemEntry

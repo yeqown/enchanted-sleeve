@@ -2,6 +2,7 @@ package esl
 
 import (
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -32,11 +33,13 @@ type DB struct {
 	// inArchived to protect DB operations while activeDataFile is archiving.
 	inArchived atomic.Bool
 
-	// TODO: we need a sema to protect DB status field, such as activeDataFile, activeDataFileOff, activeFileId, etc.
-	activeFileId uint16
-
+	// DONE: we need a sema to protect DB status field,
+	// such as activeDataFile, activeDataFileOff, activeFileId, etc.
+	activeLock        sync.RWMutex
+	activeFileId      uint16
 	activeDataFile    *os.File
 	activeDataFileOff uint32
+
 	// // The hint file for activeDataFile to store the keydir index of activeDataFile,
 	// // so that we can quickly restore keyDir from the hint file while db restart or recover from crash.
 	// activeHintFile *os.File
@@ -85,6 +88,7 @@ func newDB(path string, snap *dbPathSnap, options ...Option) (*DB, error) {
 		opt:        defaultOptions(),
 		inArchived: atomic.Bool{},
 
+		activeLock:        sync.RWMutex{},
 		activeFileId:      activeFileId,
 		activeDataFile:    dataFile,
 		activeDataFileOff: dataFileOff,
@@ -205,7 +209,7 @@ func restoreKeydirIndex(snap *dbPathSnap, keyDir *keydirMemTable) error {
 				continue
 			}
 
-			kvs, keydirs, err := readDataFile(filename)
+			kvs, keydirs, err := readDataFile(filename, fileId)
 			if err != nil {
 				return errors.Wrap(err, "readDataFile "+filename)
 			}
@@ -227,6 +231,7 @@ func restoreKeydirIndex(snap *dbPathSnap, keyDir *keydirMemTable) error {
 
 func (db *DB) archive() (err error) {
 	if !db.inArchived.CompareAndSwap(false, true) {
+		// has been in archiving, return.
 		return
 	}
 
@@ -234,19 +239,11 @@ func (db *DB) archive() (err error) {
 	_ = db.activeDataFile.Close()
 	db.activeDataFile = nil
 
-	// _ = db.activeHintFile.Sync()
-	// _ = db.activeHintFile.Close()
-	// db.activeHintFile = nil
-
 	db.activeFileId++
 	db.activeDataFile, db.activeDataFileOff, err = openDataFile(db.path, db.activeFileId)
 	if err != nil {
 		return errors.Wrap(err, "openDataFile failed")
 	}
-	// db.activeHintFile, db.activeHintOff, err = openHintFile(db.path, db.activeFileId)
-	// if err != nil {
-	// 	return errors.Wrap(err, "openHintFile failed")
-	// }
 
 	db.inArchived.Store(false)
 	return nil
@@ -273,11 +270,16 @@ func (db *DB) buildKeyDir(e *kvEntry) *keydirMemEntry {
 		time.Sleep(time.Millisecond)
 	}
 
+	db.activeLock.RLock()
+	activeFileId := db.activeFileId
+	activeDataFileOff := db.activeDataFileOff
+	db.activeLock.RUnlock()
+
 	return &keydirMemEntry{
-		fileId:      db.activeFileId,
+		fileId:      activeFileId,
 		valueSize:   e.valueSize,
-		entryOffset: db.activeDataFileOff,
-		valueOffset: db.activeDataFileOff + kvEntry_keyOff + uint32(e.keySize),
+		entryOffset: activeDataFileOff,
+		valueOffset: activeDataFileOff + kvEntry_keyOff + uint32(e.keySize),
 	}
 }
 
@@ -300,6 +302,10 @@ func (db *DB) write(key []byte, e *kvEntry, keydir *keydirMemEntry) error {
 		// spin to wait for archiving finish
 		time.Sleep(time.Millisecond)
 	}
+
+	// FIXME: maybe deadlock with keyDir.lock?
+	db.activeLock.Lock()
+	defer db.activeLock.Unlock()
 
 	n, err := db.activeDataFile.Write(e.bytes())
 	if err != nil {

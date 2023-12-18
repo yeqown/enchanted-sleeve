@@ -16,8 +16,8 @@ const (
 type keydirMemEntry struct {
 	fileId      uint16
 	valueSize   uint16
-	entryOffset uint32 // uint32 is enough since maxDataFileSize is 100MB
-	valueOffset uint32 // uint32 is enough since maxDataFileSize is 100MB
+	entryOffset uint32
+	valueOffset uint32 // uint32 is enough (about 4GB for a single file)
 }
 
 func (e keydirMemEntry) bytes() []byte {

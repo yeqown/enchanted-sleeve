@@ -98,7 +98,7 @@ func (db *DB) mergeFiles() error {
 	}
 
 	// mergedFilename := filepath.Join(db.path, fmt.Sprintf("%10d%s", db.activeFileId+1, dataFileExt))
-	return writeMergeFileAndHint(db.path, db.activeFileId+1, alive)
+	return db.writeMergeFileAndHint(db.activeFileId+1, alive)
 }
 
 func readDataFile(filename string) ([]*kvEntry, map[string]*keydirMemEntry, error) {
@@ -169,7 +169,7 @@ func readDataFile(filename string) ([]*kvEntry, map[string]*keydirMemEntry, erro
 // DONE: what if the datafile is too large to write into one file
 //
 //	over the maxDataFileSize(100MB)? split into another file?
-func writeMergeFileAndHint(path string, fileId uint16, aliveEntries map[string]*kvEntry) error {
+func (db *DB) writeMergeFileAndHint(fileId uint16, aliveEntries map[string]*kvEntry) error {
 	// open new datafile and hint file.
 	open := func(fileId uint16) (dataFile, hintFile *os.File, fn func(), err error) {
 		defer func() {
@@ -183,12 +183,12 @@ func writeMergeFileAndHint(path string, fileId uint16, aliveEntries map[string]*
 			}
 		}()
 
-		dataFName := dataFilename(path, fileId)
+		dataFName := dataFilename(db.path, fileId)
 		if dataFile, err = os.OpenFile(dataFName, os.O_CREATE|os.O_RDWR, 0666); err != nil {
 			return nil, nil, nil, err
 		}
 
-		hintFName := hintFilename(path, fileId)
+		hintFName := hintFilename(db.path, fileId)
 		if hintFile, err = os.OpenFile(hintFName, os.O_CREATE|os.O_RDWR, 0666); err != nil {
 			return nil, nil, nil, err
 		}
@@ -236,7 +236,7 @@ func writeMergeFileAndHint(path string, fileId uint16, aliveEntries map[string]*
 		}
 
 		// open another file if the current file is too large (>= 100MB).
-		if valueOff >= maxDataFileSize {
+		if valueOff >= db.opt.maxFileBytes {
 			closeFn()
 
 			fileId++

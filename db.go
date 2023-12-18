@@ -27,6 +27,8 @@ const (
 // Since it's append-only, so modification and deletion would also append a new
 // entry to overwrite old value.
 type DB struct {
+	opt *options
+
 	// inArchived to protect DB operations while activeDataFile is archiving.
 	inArchived atomic.Bool
 
@@ -80,6 +82,7 @@ func newDB(path string, snap *dbPathSnap, options ...Option) (*DB, error) {
 	}
 
 	db := &DB{
+		opt:        defaultOptions(),
 		inArchived: atomic.Bool{},
 
 		activeFileId:      activeFileId,
@@ -91,6 +94,10 @@ func newDB(path string, snap *dbPathSnap, options ...Option) (*DB, error) {
 		keyDir: keyDir,
 
 		compactCommand: make(chan struct{}, 1),
+	}
+
+	for _, opt := range options {
+		opt.apply(db.opt)
 	}
 
 	go db.startCompactRoutine()
@@ -245,15 +252,8 @@ func (db *DB) archive() (err error) {
 	return nil
 }
 
-const (
-	maxKeySize   = 1 << 9  // 512B
-	maxValueSize = 1 << 16 // 64K
-
-	maxDataFileSize = 100 * 1024 * 1024 // 100MB
-)
-
 func (db *DB) Put(key, value []byte) error {
-	if len(key) > maxKeySize || len(value) > maxValueSize {
+	if len(key) > int(db.opt.maxKeyBytes) || len(value) > int(db.opt.maxValueBytes) {
 		return ErrKeyOrValueTooLong
 	}
 
@@ -309,7 +309,7 @@ func (db *DB) write(key []byte, e *kvEntry, keydir *keydirMemEntry) error {
 	db.keyDir.set(key, keydir)        // update keyDir index.
 	db.activeDataFileOff += uint32(n) // step active file offset
 
-	if db.activeDataFileOff >= maxDataFileSize {
+	if db.activeDataFileOff >= db.opt.maxFileBytes {
 		if err = db.archive(); err != nil {
 			return errors.Wrap(err, "db archive failed")
 		}

@@ -15,7 +15,7 @@ import (
 // startCompactRoutine is a routine to compacts the older closed datafiles into one or
 // many merged files having the same structure as the existing datafiles.
 func (db *DB) startCompactRoutine() {
-	ticker := time.NewTicker(time.Second * 30)
+	ticker := time.NewTicker(db.opt.compactInterval)
 	needCompact := func() bool {
 		snap, er := takeDBPathSnap(db.filesystem(), db.path)
 		if er != nil {

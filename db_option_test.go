@@ -2,6 +2,7 @@ package esl
 
 import (
 	"testing"
+	"time"
 
 	"github.com/spf13/afero"
 	"github.com/stretchr/testify/assert"
@@ -15,6 +16,7 @@ func Test_defaultOptions(t *testing.T) {
 	assert.Equal(t, defaultOpt.maxKeyBytes, maxKeySize)
 	assert.Equal(t, defaultOpt.maxValueBytes, maxValueSize)
 	assert.Equal(t, defaultOpt.compactThreshold, uint32(10))
+	assert.Equal(t, defaultOpt.compactInterval, time.Minute)
 }
 
 func Test_WithMaxFileBytes(t *testing.T) {
@@ -43,6 +45,13 @@ func Test_WithCompactThreshold(t *testing.T) {
 	WithCompactThreshold(100).apply(opt)
 
 	assert.Equal(t, opt.compactThreshold, uint32(100))
+}
+
+func Test_WithCompactInterval(t *testing.T) {
+	opt := defaultOptions()
+	WithCompactInterval(100).apply(opt)
+
+	assert.EqualValues(t, opt.compactInterval, 100)
 }
 
 func Test_newFuncOption(t *testing.T) {

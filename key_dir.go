@@ -62,6 +62,13 @@ func newKeyDir() *keydirMemTable {
 	}
 }
 
+func (kd *keydirMemTable) len() int {
+	kd.lock.RLock()
+	defer kd.lock.RUnlock()
+
+	return len(kd.indexes)
+}
+
 func (kd *keydirMemTable) get(key []byte) *keydirMemEntry {
 	kd.lock.RLock()
 	defer kd.lock.RUnlock()

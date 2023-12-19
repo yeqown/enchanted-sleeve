@@ -3,6 +3,7 @@ package esl
 import (
 	"testing"
 
+	"github.com/spf13/afero"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -42,4 +43,23 @@ func Test_WithCompactThreshold(t *testing.T) {
 	WithCompactThreshold(100).apply(opt)
 
 	assert.Equal(t, opt.compactThreshold, uint32(100))
+}
+
+func Test_newFuncOption(t *testing.T) {
+	opt := newFuncOption(func(o *options) {
+		o.maxFileBytes = 100
+	})
+
+	assert.NotNil(t, opt)
+	assert.NotNil(t, opt.fn)
+}
+
+func Test_WithFileSystem(t *testing.T) {
+	opt := defaultOptions()
+	WithFileSystem(nil).apply(opt)
+
+	assert.Nil(t, opt.fs)
+
+	WithFileSystem(afero.NewMemMapFs()).apply(opt)
+	assert.NotNil(t, opt.fs)
 }

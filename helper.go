@@ -2,12 +2,12 @@ package esl
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/pkg/errors"
+	"github.com/spf13/afero"
 )
 
 func dataFilename(path string, fileId uint16) string {
@@ -58,15 +58,18 @@ func (snap dbPathSnap) isEmpty() bool {
 	return len(snap.dataFiles) == 0 && len(snap.hintFiles) == 0
 }
 
-func takeDBPathSnap(path string) (snap *dbPathSnap, err error) {
-	snap = &dbPathSnap{path: path}
+func takeDBPathSnap(fs FileSystem, path string) (snap *dbPathSnap, err error) {
+	snap = &dbPathSnap{
+		path:           path,
+		lastDataFileId: initDataFileId,
+	}
 	pattern := filepath.Join(path, dataFilePattern)
-	if snap.dataFiles, err = filepath.Glob(pattern); err != nil {
+	if snap.dataFiles, err = afero.Glob(fs, pattern); err != nil {
 		return nil, errors.Wrap(err, "takeDBPathSnap glob data files")
 	}
 
 	pattern = filepath.Join(path, hintFilePattern)
-	if snap.hintFiles, err = filepath.Glob(pattern); err != nil {
+	if snap.hintFiles, err = afero.Glob(fs, pattern); err != nil {
 		return nil, errors.Wrap(err, "takeDBPathSnap glob hint files")
 	}
 
@@ -114,16 +117,37 @@ func lastFileIdFromFilenames(filenames []string) (uint16, error) {
 	return uint16(fileIds[0]), nil
 }
 
-func ensurePath(path string) error {
-	_, err := os.Stat(path)
-	if err == nil {
+func ensurePath(fs FileSystem, path string) error {
+	exists, err := afero.DirExists(fs, path)
+	if err != nil {
+		return err
+	}
+
+	if exists {
 		return nil
 	}
 
-	// If not non-exist error, return it.
-	if !os.IsNotExist(err) {
-		return err
+	return fs.MkdirAll(path, 0744)
+}
+
+// backupFile rename filename to filename.bak, it will return a restore function
+// and a clean function. The restore function will rename filename.bak to filename,
+// and the clean function will remove filename.
+func backupFile(fs FileSystem, filename string) (restoreFn func() error, cleanFn func() error, err error) {
+	oldName := filename
+	backupName := filename + ".bak"
+
+	if err = fs.Rename(filename, backupName); err != nil {
+		return nil, nil, errors.Wrap(err, "backupFile rename failed")
 	}
-	// Otherwise, create it.
-	return os.MkdirAll(path, 0744)
+
+	restoreFn = func() error {
+		return fs.Rename(backupName, oldName)
+	}
+
+	cleanFn = func() error {
+		return fs.Remove(backupName)
+	}
+
+	return restoreFn, cleanFn, nil
 }

@@ -8,6 +8,7 @@ import (
 	"unsafe"
 
 	"github.com/pkg/errors"
+	"github.com/spf13/afero"
 )
 
 const (
@@ -37,12 +38,12 @@ type DB struct {
 	// such as activeDataFile, activeDataFileOff, activeFileId, etc.
 	activeLock        sync.RWMutex
 	activeFileId      uint16
-	activeDataFile    *os.File
+	activeDataFile    afero.File
 	activeDataFileOff uint32
 
 	// // The hint file for activeDataFile to store the keydir index of activeDataFile,
 	// // so that we can quickly restore keyDir from the hint file while db restart or recover from crash.
-	// activeHintFile *os.File
+	// activeHintFile afero.File
 	// activeHintOff  uint32
 
 	// path is the directory where the DB is stored.
@@ -57,35 +58,40 @@ type DB struct {
 
 // Open create or restore from the path.
 func Open(path string, options ...Option) (*DB, error) {
-	if err := ensurePath(path); err != nil {
+	dbOpts := defaultOptions()
+	for _, opt := range options {
+		opt.apply(dbOpts)
+	}
+
+	if err := ensurePath(dbOpts.fs, path); err != nil {
 		return nil, errors.Wrap(err, "Open ensurePath failed")
 	}
 
-	snap, err := takeDBPathSnap(path)
+	snap, err := takeDBPathSnap(dbOpts.fs, path)
 	if err != nil {
 		return nil, errors.Wrap(err, "Open takeDBPathSnap")
 	}
 
-	return newDB(path, snap, options...)
+	return newDB(path, snap, dbOpts)
 }
 
-func newDB(path string, snap *dbPathSnap, options ...Option) (*DB, error) {
+func newDB(path string, snap *dbPathSnap, opts *options) (*DB, error) {
 
 	activeFileId := snap.lastDataFileId
-	dataFile, dataFileOff, err := openDataFile(path, activeFileId)
+	dataFile, dataFileOff, err := openDataFile(opts.fs, path, activeFileId)
 	if err != nil {
 		return nil, errors.Wrap(err, "openDataFile")
 	}
 
 	keyDir := newKeyDir()
 	if !snap.isEmpty() {
-		if err = restoreKeydirIndex(snap, keyDir); err != nil {
+		if err = restoreKeydirIndex(opts.fs, snap, keyDir); err != nil {
 			return nil, errors.Wrap(err, "restoreKeydirIndex")
 		}
 	}
 
 	db := &DB{
-		opt:        defaultOptions(),
+		opt:        opts,
 		inArchived: atomic.Bool{},
 
 		activeLock:        sync.RWMutex{},
@@ -98,10 +104,6 @@ func newDB(path string, snap *dbPathSnap, options ...Option) (*DB, error) {
 		keyDir: keyDir,
 
 		compactCommand: make(chan struct{}, 1),
-	}
-
-	for _, opt := range options {
-		opt.apply(db.opt)
 	}
 
 	go db.startCompactRoutine()
@@ -133,13 +135,21 @@ func (db *DB) Close() error {
 	return nil
 }
 
+func (db *DB) filesystem() FileSystem {
+	if db == nil || db.opt == nil || db.opt.fs == nil {
+		return afero.NewOsFs()
+	}
+
+	return db.opt.fs
+}
+
 // openDataFile open a data file for writing. If the file is not exist, it
 // creates a new active file with given fileId which should be formed as 10 digits,
 // for example: 0000000001.esld
-func openDataFile(path string, fileId uint16) (*os.File, uint32, error) {
+func openDataFile(fs FileSystem, path string, fileId uint16) (afero.File, uint32, error) {
 	dataFName := dataFilename(path, fileId)
 
-	dataFd, err := os.OpenFile(dataFName, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0644)
+	dataFd, err := fs.OpenFile(dataFName, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0644)
 	if err != nil {
 		return nil, 0, errors.Wrap(err, "open data file failed")
 	}
@@ -152,10 +162,10 @@ func openDataFile(path string, fileId uint16) (*os.File, uint32, error) {
 	return dataFd, uint32(st.Size()), nil
 }
 
-func openHintFile(path string, fileId uint16) (*os.File, uint32, error) {
+func openHintFile(fs FileSystem, path string, fileId uint16) (afero.File, uint32, error) {
 	hintFName := hintFilename(path, fileId)
 
-	hintFd, err := os.OpenFile(hintFName, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0644)
+	hintFd, err := fs.OpenFile(hintFName, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0644)
 	if err != nil {
 		return nil, 0, errors.Wrap(err, "open hint file failed")
 	}
@@ -173,7 +183,7 @@ func openHintFile(path string, fileId uint16) (*os.File, uint32, error) {
 // will try scan all hint files and merge them into a single keyDir. But if the
 // hint files are not found, the restore process will scan all data files and
 // merge them into a single keyDir.
-func restoreKeydirIndex(snap *dbPathSnap, keyDir *keydirMemTable) error {
+func restoreKeydirIndex(fs FileSystem, snap *dbPathSnap, keyDir *keydirMemTable) error {
 	hintFileIds := make(map[uint16]struct{}, len(snap.hintFiles))
 	if len(snap.hintFiles) != 0 {
 		for _, hintFile := range snap.hintFiles {
@@ -184,7 +194,7 @@ func restoreKeydirIndex(snap *dbPathSnap, keyDir *keydirMemTable) error {
 			}
 			hintFileIds[fileId] = struct{}{}
 
-			keydirs, err := readHintFile(hintFile)
+			keydirs, err := readHintFile(fs, hintFile)
 			if err != nil {
 				return errors.Wrap(err, "read hint file failed")
 			}
@@ -209,7 +219,7 @@ func restoreKeydirIndex(snap *dbPathSnap, keyDir *keydirMemTable) error {
 				continue
 			}
 
-			kvs, keydirs, err := readDataFile(filename, fileId)
+			kvs, keydirs, err := readDataFile(fs, filename, fileId)
 			if err != nil {
 				return errors.Wrap(err, "readDataFile "+filename)
 			}
@@ -240,7 +250,7 @@ func (db *DB) archive() (err error) {
 	db.activeDataFile = nil
 
 	db.activeFileId++
-	db.activeDataFile, db.activeDataFileOff, err = openDataFile(db.path, db.activeFileId)
+	db.activeDataFile, db.activeDataFileOff, err = openDataFile(db.filesystem(), db.path, db.activeFileId)
 	if err != nil {
 		return errors.Wrap(err, "openDataFile failed")
 	}
@@ -339,7 +349,7 @@ func (db *DB) get(key []byte, quick bool) (entry *kvEntry, err error) {
 		return nil, ErrKeyNotFound
 	}
 
-	var fd *os.File
+	var fd afero.File
 	if clue.fileId == db.activeFileId {
 		fd = db.activeDataFile
 	} else {
@@ -362,7 +372,7 @@ func (db *DB) get(key []byte, quick bool) (entry *kvEntry, err error) {
 	return entry, nil
 }
 
-func readEntryEntire(file *os.File, clue *keydirMemEntry) (*kvEntry, error) {
+func readEntryEntire(file afero.File, clue *keydirMemEntry) (*kvEntry, error) {
 	// TODO: use buffer pool to reduce memory allocation.
 	header := make([]byte, kvEntry_fixedBytes)
 	n, err := file.ReadAt(header, int64(clue.entryOffset))
@@ -395,7 +405,7 @@ func readEntryEntire(file *os.File, clue *keydirMemEntry) (*kvEntry, error) {
 	return entry, nil
 }
 
-func readValueOnly(file *os.File, clue *keydirMemEntry) ([]byte, error) {
+func readValueOnly(file afero.File, clue *keydirMemEntry) ([]byte, error) {
 	value := make([]byte, clue.valueSize)
 	n, err := file.ReadAt(value, int64(clue.valueOffset))
 	if err != nil || n != int(clue.valueSize) {
@@ -407,9 +417,9 @@ func readValueOnly(file *os.File, clue *keydirMemEntry) ([]byte, error) {
 
 // openInactiveFile open inactive file for reading.
 // TODO: add cache pool to reduce file open/close operations.
-func (db *DB) openInactiveFile(clue *keydirMemEntry) (*os.File, error) {
+func (db *DB) openInactiveFile(clue *keydirMemEntry) (afero.File, error) {
 	filename := dataFilename(db.path, clue.fileId)
-	fd, err := os.OpenFile(filename, os.O_RDONLY, 0666)
+	fd, err := db.filesystem().OpenFile(filename, os.O_RDONLY, 0666)
 	if err != nil {
 		return nil, errors.Wrap(err, "open file failed")
 	}

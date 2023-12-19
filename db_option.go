@@ -1,5 +1,9 @@
 package esl
 
+import (
+	"github.com/spf13/afero"
+)
+
 const (
 	maxKeySize   = uint16(1) << 9  // 512B
 	maxValueSize = uint16(1) << 15 // 64K
@@ -20,6 +24,9 @@ type options struct {
 	// The maximum number of files to keep. The default value is 10.
 	// When the number of files exceeds this value, the compaction process will be triggered.
 	compactThreshold uint32
+
+	// The file system to access. The default file system is implemented by os package.
+	fs FileSystem
 }
 
 func defaultOptions() *options {
@@ -28,6 +35,7 @@ func defaultOptions() *options {
 		maxKeyBytes:      maxKeySize,
 		maxValueBytes:    maxValueSize,
 		compactThreshold: 10,
+		fs:               afero.NewOsFs(),
 	}
 }
 
@@ -74,5 +82,12 @@ func WithMaxValueBytes(maxValueBytes uint16) Option {
 func WithCompactThreshold(compactThreshold uint32) Option {
 	return newFuncOption(func(o *options) {
 		o.compactThreshold = compactThreshold
+	})
+}
+
+// WithFileSystem set the file system to access.
+func WithFileSystem(fs FileSystem) Option {
+	return newFuncOption(func(o *options) {
+		o.fs = fs
 	})
 }

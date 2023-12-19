@@ -9,6 +9,7 @@ import (
 	"unsafe"
 
 	"github.com/pkg/errors"
+	"github.com/spf13/afero"
 )
 
 // startCompactRoutine is a routine to compacts the older closed datafiles into one or
@@ -52,7 +53,7 @@ func (db *DB) startCompactRoutine() {
 // and it only keeps the "live" or the latest version of the key-value pairs.
 func (db *DB) mergeFiles() error {
 	pattern := filepath.Join(db.path, dataFilePattern)
-	matched, err := filepath.Glob(pattern)
+	matched, err := afero.Glob(db.filesystem(), pattern)
 	if err != nil {
 		return err
 	}
@@ -88,7 +89,7 @@ func (db *DB) mergeFiles() error {
 		}
 
 		filename := dataFilename(db.path, uint16(fileId))
-		kvs, _, err2 := readDataFile(filename, uint16(fileId))
+		kvs, _, err2 := readDataFile(db.filesystem(), filename, uint16(fileId))
 		if err2 != nil {
 			return errors.Wrap(err2, "readDataFile "+filename)
 		}
@@ -113,8 +114,8 @@ func (db *DB) mergeFiles() error {
 	return db.writeMergeFileAndHint(db.activeFileId+1, alive)
 }
 
-func readDataFile(filename string, fileId uint16) ([]*kvEntry, map[string]*keydirMemEntry, error) {
-	fd, err := os.OpenFile(filename, os.O_RDONLY, 0666)
+func readDataFile(fs FileSystem, filename string, fileId uint16) ([]*kvEntry, map[string]*keydirMemEntry, error) {
+	fd, err := fs.OpenFile(filename, os.O_RDONLY, 0666)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -181,7 +182,7 @@ func readDataFile(filename string, fileId uint16) ([]*kvEntry, map[string]*keydi
 //	over the maxDataFileSize(100MB)? split into another file?
 func (db *DB) writeMergeFileAndHint(fileId uint16, aliveEntries map[string]*kvEntry) error {
 	// open new datafile and hint file.
-	open := func(fileId uint16) (dataFile, hintFile *os.File, fn func(), err error) {
+	open := func(fileId uint16) (dataFile, hintFile afero.File, fn func(), err error) {
 		defer func() {
 			if err != nil {
 				if dataFile != nil {
@@ -194,12 +195,12 @@ func (db *DB) writeMergeFileAndHint(fileId uint16, aliveEntries map[string]*kvEn
 		}()
 
 		dataFName := dataFilename(db.path, fileId)
-		if dataFile, err = os.OpenFile(dataFName, os.O_CREATE|os.O_RDWR, 0666); err != nil {
+		if dataFile, err = db.filesystem().OpenFile(dataFName, os.O_CREATE|os.O_RDWR, 0666); err != nil {
 			return nil, nil, nil, err
 		}
 
 		hintFName := hintFilename(db.path, fileId)
-		if hintFile, err = os.OpenFile(hintFName, os.O_CREATE|os.O_RDWR, 0666); err != nil {
+		if hintFile, err = db.filesystem().OpenFile(hintFName, os.O_CREATE|os.O_RDWR, 0666); err != nil {
 			return nil, nil, nil, err
 		}
 
@@ -268,8 +269,8 @@ func (db *DB) writeMergeFileAndHint(fileId uint16, aliveEntries map[string]*kvEn
 	return nil
 }
 
-func readHintFile(filename string) ([]*keydirFileEntry, error) {
-	fd, err := os.OpenFile(filename, os.O_RDONLY, 0666)
+func readHintFile(fs FileSystem, filename string) ([]*keydirFileEntry, error) {
+	fd, err := fs.OpenFile(filename, os.O_RDONLY, 0666)
 	if err != nil {
 		return nil, err
 	}

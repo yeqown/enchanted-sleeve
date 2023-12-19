@@ -5,7 +5,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unsafe"
 
 	"github.com/pkg/errors"
 	"github.com/spf13/afero"
@@ -16,6 +15,8 @@ const (
 	dataFilePattern = "*" + dataFileExt
 	hintFileExt     = ".hint"
 	hintFilePattern = "*" + hintFileExt
+
+	initDataFileId = uint16(1)
 )
 
 // DB is a simple key-value store backed by a log file, which is an append-only
@@ -52,6 +53,8 @@ type DB struct {
 	// keyDir is a key-value index for all key-value pairs.
 	keyDir *keydirMemTable
 
+	// inCompaction is a flag to indicate whether the DB is in compaction.
+	inCompaction atomic.Bool
 	// compactCommand is a channel to receive startCompactRoutine command.
 	compactCommand chan struct{}
 }
@@ -103,8 +106,12 @@ func newDB(path string, snap *dbPathSnap, opts *options) (*DB, error) {
 
 		keyDir: keyDir,
 
+		inCompaction:   atomic.Bool{},
 		compactCommand: make(chan struct{}, 1),
 	}
+
+	db.inArchived.Store(false)
+	db.inCompaction.Store(false)
 
 	go db.startCompactRoutine()
 
@@ -162,82 +169,22 @@ func openDataFile(fs FileSystem, path string, fileId uint16) (afero.File, uint32
 	return dataFd, uint32(st.Size()), nil
 }
 
-func openHintFile(fs FileSystem, path string, fileId uint16) (afero.File, uint32, error) {
-	hintFName := hintFilename(path, fileId)
-
-	hintFd, err := fs.OpenFile(hintFName, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0644)
-	if err != nil {
-		return nil, 0, errors.Wrap(err, "open hint file failed")
-	}
-
-	st, err := hintFd.Stat()
-	if err != nil {
-		_ = hintFd.Close()
-		return nil, 0, errors.Wrap(err, "read file stat failed")
-	}
-
-	return hintFd, uint32(st.Size()), nil
-}
-
-// restoreKeydirIndex restore keyDir from index file. First of all, the restore process
-// will try scan all hint files and merge them into a single keyDir. But if the
-// hint files are not found, the restore process will scan all data files and
-// merge them into a single keyDir.
-func restoreKeydirIndex(fs FileSystem, snap *dbPathSnap, keyDir *keydirMemTable) error {
-	hintFileIds := make(map[uint16]struct{}, len(snap.hintFiles))
-	if len(snap.hintFiles) != 0 {
-		for _, hintFile := range snap.hintFiles {
-			fileId, err := fileIdFromFilename(hintFile)
-			if err != nil {
-				// skip invalid hint file
-				continue
-			}
-			hintFileIds[fileId] = struct{}{}
-
-			keydirs, err := readHintFile(fs, hintFile)
-			if err != nil {
-				return errors.Wrap(err, "read hint file failed")
-			}
-
-			for _, keydir := range keydirs {
-				keyDir.set(keydir.key, &keydir.keydirMemEntry)
-			}
-		}
-		return nil
-	}
-
-	if len(snap.dataFiles) != 0 {
-		for _, filename := range snap.dataFiles {
-			fileId, err := fileIdFromFilename(filename)
-			if err != nil {
-				println("could not parse data file, ", err.Error())
-				continue
-			}
-			// Range data files and merge them into keyDir. if the data file has related hint file,
-			// we can skip the data file.
-			if _, exists := hintFileIds[fileId]; exists {
-				continue
-			}
-
-			kvs, keydirs, err := readDataFile(fs, filename, fileId)
-			if err != nil {
-				return errors.Wrap(err, "readDataFile "+filename)
-			}
-
-			// FIXED: keydirMemEntry should be created while reading data file,
-			//  calculate from the offset is not precise and safe.
-			off := uint32(0)
-			for _, kv := range kvs {
-				keyDir.set(kv.key, keydirs[unsafe.String(&kv.key[0], len(kv.key))])
-				off += kvEntry_fixedBytes + uint32(kv.keySize) + uint32(kv.valueSize)
-			}
-		}
-
-		return nil
-	}
-
-	return nil
-}
+// func openHintFile(fs FileSystem, path string, fileId uint16) (afero.File, uint32, error) {
+// 	hintFName := hintFilename(path, fileId)
+//
+// 	hintFd, err := fs.OpenFile(hintFName, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0644)
+// 	if err != nil {
+// 		return nil, 0, errors.Wrap(err, "open hint file failed")
+// 	}
+//
+// 	st, err := hintFd.Stat()
+// 	if err != nil {
+// 		_ = hintFd.Close()
+// 		return nil, 0, errors.Wrap(err, "read file stat failed")
+// 	}
+//
+// 	return hintFd, uint32(st.Size()), nil
+// }
 
 func (db *DB) archive() (err error) {
 	if !db.inArchived.CompareAndSwap(false, true) {
@@ -296,7 +243,7 @@ func (db *DB) buildKeyDir(e *kvEntry) *keydirMemEntry {
 // Delete removes the key from the DB. Note that the key is not actually removed from the DB,
 // but marked as deleted, and the key will be removed from the DB when the DB is compacted.
 func (db *DB) Delete(key []byte) error {
-	if dir := db.keyDir.get(key); dir != nil {
+	if dir := db.keyDir.get(key); dir == nil || dir.valueSize == 0 {
 		return nil
 	}
 
@@ -344,8 +291,13 @@ func (db *DB) Get(key []byte) (value []byte, err error) {
 }
 
 func (db *DB) get(key []byte, quick bool) (entry *kvEntry, err error) {
+	for db.inCompaction.Load() {
+		// spin to wait for compaction finish
+		time.Sleep(time.Millisecond)
+	}
+
 	clue := db.keyDir.get(key)
-	if clue == nil {
+	if clue == nil || clue.valueSize == 0 {
 		return nil, ErrKeyNotFound
 	}
 
@@ -372,12 +324,12 @@ func (db *DB) get(key []byte, quick bool) (entry *kvEntry, err error) {
 	return entry, nil
 }
 
-func readEntryEntire(file afero.File, clue *keydirMemEntry) (*kvEntry, error) {
+func readEntryEntire(dataFile afero.File, clue *keydirMemEntry) (*kvEntry, error) {
 	// TODO: use buffer pool to reduce memory allocation.
 	header := make([]byte, kvEntry_fixedBytes)
-	n, err := file.ReadAt(header, int64(clue.entryOffset))
+	n, err := dataFile.ReadAt(header, int64(clue.entryOffset))
 	if err != nil || n != kvEntry_fixedBytes {
-		return nil, errors.Wrap(err, "read from file failed")
+		return nil, errors.Wrap(err, "read from dataFile failed")
 	}
 
 	entry, err := decodeEntryFromHeader(header)
@@ -386,15 +338,15 @@ func readEntryEntire(file afero.File, clue *keydirMemEntry) (*kvEntry, error) {
 	}
 
 	// read key.
-	n, err = file.ReadAt(entry.key, int64(clue.entryOffset+kvEntry_fixedBytes))
+	n, err = dataFile.ReadAt(entry.key, int64(clue.entryOffset+kvEntry_fixedBytes))
 	if err != nil || n != int(entry.keySize) {
-		return nil, errors.Wrap(err, "read from file failed")
+		return nil, errors.Wrap(err, "read from dataFile failed")
 	}
 
 	// read value.
-	n, err = file.ReadAt(entry.value, int64(clue.entryOffset+kvEntry_fixedBytes+uint32(entry.keySize)))
+	n, err = dataFile.ReadAt(entry.value, int64(clue.entryOffset+kvEntry_fixedBytes+uint32(entry.keySize)))
 	if err != nil || n != int(entry.valueSize) {
-		return nil, errors.Wrap(err, "read from file failed")
+		return nil, errors.Wrap(err, "read from dataFile failed")
 	}
 
 	// DONE: check entry crc to ensure the entry is not corrupted.
@@ -405,11 +357,11 @@ func readEntryEntire(file afero.File, clue *keydirMemEntry) (*kvEntry, error) {
 	return entry, nil
 }
 
-func readValueOnly(file afero.File, clue *keydirMemEntry) ([]byte, error) {
+func readValueOnly(dataFile afero.File, clue *keydirMemEntry) ([]byte, error) {
 	value := make([]byte, clue.valueSize)
-	n, err := file.ReadAt(value, int64(clue.valueOffset))
+	n, err := dataFile.ReadAt(value, int64(clue.valueOffset))
 	if err != nil || n != int(clue.valueSize) {
-		return nil, errors.Wrap(err, "read from file failed")
+		return nil, errors.Wrap(err, "read from dataFile failed")
 	}
 
 	return value, nil
@@ -431,7 +383,10 @@ type Key []byte
 
 func (db *DB) ListKeys() []Key {
 	keys := make([]Key, 0, len(db.keyDir.indexes))
-	for key := range db.keyDir.indexes {
+	for key, keydir := range db.keyDir.indexes {
+		if keydir.valueSize == 0 {
+			continue
+		}
 		keys = append(keys, Key(key))
 	}
 
@@ -449,5 +404,9 @@ func (db *DB) Merge() error {
 
 // Sync force any writes to sync to disk
 func (db *DB) Sync() {
-	// TODO:
+	if db.inArchived.Load() {
+		return
+	}
+
+	_ = db.activeDataFile.Sync()
 }

@@ -226,17 +226,17 @@ func Test_lastFileIdFromFilenames(t *testing.T) {
 }
 
 func Test_ensurePath(t *testing.T) {
-	existsPath := "/tmp/exist"
-	nonExistsPath := "/tmp/exist/non-exists"
+	existPath := "/tmp/exist"
+	nonExistsPath := "/tmp/exist/non-exist"
 
 	memMapFs := afero.NewMemMapFs()
-	err := memMapFs.MkdirAll(existsPath, 0755)
+	err := memMapFs.MkdirAll(existPath, 0755)
 	require.NoError(t, err)
 
 	// TODO: mock mkdir failed error case
 	// memMapFs2 := afero.NewMemMapFs()
 	// // set permission to a value which will cause child 0744 dir creation to fail
-	// err = memMapFs.MkdirAll(existsPath, 0000)
+	// err = memMapFs.MkdirAll(existPath, 0000)
 	// require.NoError(t, err)
 
 	type args struct {
@@ -249,15 +249,15 @@ func Test_ensurePath(t *testing.T) {
 		wantErr assert.ErrorAssertionFunc
 	}{
 		{
-			name: "case 1, exists path, just return",
+			name: "case 1, exist path, just return",
 			args: args{
 				fs:   memMapFs,
-				path: existsPath,
+				path: existPath,
 			},
 			wantErr: assert.NoError,
 		},
 		{
-			name: "case 2, non exists path, create success",
+			name: "case 2, non exist path, create success",
 			args: args{
 				fs:   memMapFs,
 				path: nonExistsPath,
@@ -266,7 +266,7 @@ func Test_ensurePath(t *testing.T) {
 		},
 		// TODO: mock mkdir failed error case
 		// {
-		// 	name: "case 3, non exists path, create fail",
+		// 	name: "case 3, non exist path, create fail",
 		// 	args: args{
 		// 		fs:   memMapFs2,
 		// 		path: nonExistsPath,
@@ -323,4 +323,68 @@ func Test_takeDBPathSnap_noHintFiles(t *testing.T) {
 	assert.Equal(t, 0, len(dbPathSnap.hintFiles))
 	assert.Equal(t, uint16(2), dbPathSnap.lastDataFileId)
 	assert.Equal(t, "/tmp/0000000002.esld", dbPathSnap.lastActiveFile("/tmp"))
+}
+
+func Test_backupFile_backup(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	filename := "/tmp/0000000001.esld"
+	_, err := fs.Create(filename)
+	require.NoError(t, err)
+	exist, err := afero.Exists(fs, filename)
+	require.NoError(t, err)
+	assert.True(t, exist)
+
+	restore, clean, err := backupFile(fs, filename)
+	require.NoError(t, err)
+	assert.NotNil(t, restore)
+	assert.NotNil(t, clean)
+
+	// since it rename to /tmp/0000000001.esld.bak, so it should not exist
+	exist, err = afero.Exists(fs, filename)
+	require.NoError(t, err)
+	assert.False(t, exist)
+}
+
+func Test_backupFile_clean(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	filename := "/tmp/0000000001.esld"
+	_, err := fs.Create(filename)
+	require.NoError(t, err)
+	exist, err := afero.Exists(fs, filename)
+	require.NoError(t, err)
+	assert.True(t, exist)
+
+	restore, clean, err := backupFile(fs, filename)
+	require.NoError(t, err)
+	assert.NotNil(t, restore)
+	assert.NotNil(t, clean)
+
+	err = clean()
+	require.NoError(t, err)
+
+	exist, err = afero.Exists(fs, filename)
+	require.NoError(t, err)
+	assert.False(t, exist)
+}
+
+func Test_backupFile_restore(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	filename := "/tmp/0000000001.esld"
+	_, err := fs.Create(filename)
+	require.NoError(t, err)
+	exist, err := afero.Exists(fs, filename)
+	require.NoError(t, err)
+	assert.True(t, exist)
+
+	restore, clean, err := backupFile(fs, filename)
+	require.NoError(t, err)
+	assert.NotNil(t, restore)
+	assert.NotNil(t, clean)
+
+	err = restore()
+	require.NoError(t, err)
+
+	exist, err = afero.Exists(fs, filename)
+	require.NoError(t, err)
+	assert.True(t, exist)
 }

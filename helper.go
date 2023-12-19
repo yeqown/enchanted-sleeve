@@ -59,7 +59,10 @@ func (snap dbPathSnap) isEmpty() bool {
 }
 
 func takeDBPathSnap(fs FileSystem, path string) (snap *dbPathSnap, err error) {
-	snap = &dbPathSnap{path: path}
+	snap = &dbPathSnap{
+		path:           path,
+		lastDataFileId: initDataFileId,
+	}
 	pattern := filepath.Join(path, dataFilePattern)
 	if snap.dataFiles, err = afero.Glob(fs, pattern); err != nil {
 		return nil, errors.Wrap(err, "takeDBPathSnap glob data files")
@@ -125,4 +128,26 @@ func ensurePath(fs FileSystem, path string) error {
 	}
 
 	return fs.MkdirAll(path, 0744)
+}
+
+// backupFile rename filename to filename.bak, it will return a restore function
+// and a clean function. The restore function will rename filename.bak to filename,
+// and the clean function will remove filename.
+func backupFile(fs FileSystem, filename string) (restoreFn func() error, cleanFn func() error, err error) {
+	oldName := filename
+	backupName := filename + ".bak"
+
+	if err = fs.Rename(filename, backupName); err != nil {
+		return nil, nil, errors.Wrap(err, "backupFile rename failed")
+	}
+
+	restoreFn = func() error {
+		return fs.Rename(backupName, oldName)
+	}
+
+	cleanFn = func() error {
+		return fs.Remove(backupName)
+	}
+
+	return restoreFn, cleanFn, nil
 }

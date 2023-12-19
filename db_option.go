@@ -1,6 +1,8 @@
 package esl
 
 import (
+	"time"
+
 	"github.com/spf13/afero"
 )
 
@@ -24,6 +26,9 @@ type options struct {
 	// The maximum number of files to keep. The default value is 10.
 	// When the number of files exceeds this value, the compaction process will be triggered.
 	compactThreshold uint32
+	// The interval to check whether the compaction process should be triggered.
+	// default value is 1 minute.
+	compactInterval time.Duration
 
 	// The file system to access. The default file system is implemented by os package.
 	fs FileSystem
@@ -35,6 +40,7 @@ func defaultOptions() *options {
 		maxKeyBytes:      maxKeySize,
 		maxValueBytes:    maxValueSize,
 		compactThreshold: 10,
+		compactInterval:  time.Minute,
 		fs:               afero.NewOsFs(),
 	}
 }
@@ -82,6 +88,15 @@ func WithMaxValueBytes(maxValueBytes uint16) Option {
 func WithCompactThreshold(compactThreshold uint32) Option {
 	return newFuncOption(func(o *options) {
 		o.compactThreshold = compactThreshold
+	})
+}
+
+// WithCompactInterval set the interval to check whether the compaction process should be triggered.
+// NOTE: The interval is recommended to be greater than 1 minute. but it depends on the case
+// of the application.
+func WithCompactInterval(compactInterval time.Duration) Option {
+	return newFuncOption(func(o *options) {
+		o.compactInterval = compactInterval
 	})
 }
 

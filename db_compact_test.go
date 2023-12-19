@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/spf13/afero"
 	"github.com/stretchr/testify/assert"
@@ -302,4 +303,49 @@ func Test_readDataFile(t *testing.T) {
 		assert.Equal(t, expected.entryOffset, gotKeydir.entryOffset)
 		assert.Equal(t, expected.valueOffset, gotKeydir.valueOffset)
 	}
+}
+
+func Test_DB_autoCompact(t *testing.T) {
+	fs := afero.NewMemMapFs()
+
+	db, err := Open(
+		"/tmp/esl",
+		WithFileSystem(fs),
+		WithMaxFileBytes(100),
+		WithCompactThreshold(4),
+		WithCompactInterval(time.Second),
+	)
+	require.NoError(t, err)
+
+	// write 10 kvEntries and then delete them all 4 times, so that we can simulate the
+	// compact situation (more than 4 files, and can be compacted since we delete data).
+	// Then wait the auto compact process trigger and finish.
+
+	for i := 0; i < 4; i++ {
+		entries := randomKVEntries(10)
+		for _, ent := range entries {
+			err = db.Put(ent.key, ent.value)
+			require.NoError(t, err)
+		}
+
+		for key := range entries {
+			err = db.Delete([]byte(key))
+			require.NoError(t, err)
+		}
+	}
+
+	// make sure the auto compact process has been triggered and finish.
+	time.Sleep(2 * time.Second)
+
+	// wait compact process finish
+	for db.inCompaction.Load() {
+		time.Sleep(time.Millisecond)
+	}
+
+	// we expect only 2 data file and one hint file after compact.
+	snap, err := takeDBPathSnap(fs, "/tmp/esl")
+	require.NoError(t, err)
+	require.NotNil(t, snap)
+	assert.Equal(t, 3, len(snap.dataFiles))
+	assert.Equal(t, 2, len(snap.hintFiles))
 }

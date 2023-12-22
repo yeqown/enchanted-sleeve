@@ -164,7 +164,7 @@ func Test_DB_concurrency_access(t *testing.T) {
 		return []byte(strconv.Itoa(routineIdx) + "_Test_DB_concurrency_access_" + strconv.Itoa(keyIdx))
 	}
 	valueFunc := func(routineIdx, keyIdx int) []byte {
-		return []byte("value" + strconv.Itoa(keyIdx))
+		return []byte("value_" + strconv.Itoa(routineIdx) + "_" + strconv.Itoa(keyIdx))
 	}
 
 	// There are 10 routines, each routine put 100 key-value pairs into db
@@ -182,6 +182,8 @@ func Test_DB_concurrency_access(t *testing.T) {
 			}
 		}(i)
 	}
+
+	time.Sleep(100 * time.Millisecond)
 
 	for i := 0; i < nRoutine; i++ {
 		wg.Add(1)

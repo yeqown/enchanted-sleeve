@@ -301,8 +301,8 @@ func (db *DB) get(key []byte, quick bool) (entry *kvEntry, err error) {
 	}
 
 	// FIXED: activeFile concurrent read/write may cause read entry incorrectly.
-	db.activeLock.RLock()
-	defer db.activeLock.RUnlock()
+	db.activeLock.Lock()
+	defer db.activeLock.Unlock()
 
 	if quick {
 		entry = new(kvEntry)

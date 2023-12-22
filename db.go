@@ -34,6 +34,8 @@ type DB struct {
 
 	// inArchived to protect DB operations while activeDataFile is archiving.
 	inArchived atomic.Bool
+	// TODO: use inArchivedCond to replace inArchived flag spin lock.
+	// inArchivedCond sync.Cond
 
 	// DONE: we need a sema to protect DB status field,
 	// such as activeDataFile, activeDataFileOff, activeFileId, etc.
@@ -212,32 +214,8 @@ func (db *DB) Put(key, value []byte) error {
 	}
 
 	entry := newEntry(key, value)
-	keydir := db.buildKeyDir(entry)
 
-	return db.write(key, entry, keydir)
-}
-
-func (db *DB) buildKeyDir(e *kvEntry) *keydirMemEntry {
-	if e == nil {
-		return nil
-	}
-
-	if db.inArchived.Load() {
-		// spin wait for archive finish
-		time.Sleep(time.Millisecond)
-	}
-
-	db.activeLock.RLock()
-	activeFileId := db.activeFileId
-	activeDataFileOff := db.activeDataFileOff
-	db.activeLock.RUnlock()
-
-	return &keydirMemEntry{
-		fileId:      activeFileId,
-		valueSize:   e.valueSize,
-		entryOffset: activeDataFileOff,
-		valueOffset: activeDataFileOff + kvEntry_keyOff + uint32(e.keySize),
-	}
+	return db.write(key, entry)
 }
 
 // Delete removes the key from the DB. Note that the key is not actually removed from the DB,
@@ -248,29 +226,40 @@ func (db *DB) Delete(key []byte) error {
 	}
 
 	entry := newEntry(key, nil)
-	keydir := db.buildKeyDir(entry)
 
-	return db.write(key, entry, keydir)
+	return db.write(key, entry)
 }
 
 // write to activate file and update keyDir index.
-func (db *DB) write(key []byte, e *kvEntry, keydir *keydirMemEntry) error {
+// TODO: use channel to write to active file in sequence. also can set different channel for diff priority write.
+func (db *DB) write(key []byte, e *kvEntry) error {
 	for db.inArchived.Load() {
 		// spin to wait for archiving finish
 		time.Sleep(time.Millisecond)
 	}
 
-	// FIXME: maybe deadlock with keyDir.lock?
+	// FIXED: maybe deadlock with keyDir.lock? no, since keyDir only called in write method and
+	// restoreKeydirIndex method, and restoreKeydirIndex method is called in newDB method which
+	// is called only once in Open method.
 	db.activeLock.Lock()
 	defer db.activeLock.Unlock()
+
+	keydir := &keydirMemEntry{
+		fileId:      db.activeFileId,
+		valueSize:   e.valueSize,
+		entryOffset: db.activeDataFileOff,
+		valueOffset: db.activeDataFileOff + kvEntry_fixedBytes + uint32(e.keySize),
+	}
+
+	// fmt.Printf("entry(key=%s, value=%s) keydir: %+v\n", key, e.value, keydir)
 
 	n, err := db.activeDataFile.Write(e.bytes())
 	if err != nil {
 		return errors.Wrap(err, "db.Put could not write to file")
 	}
 
-	db.keyDir.set(key, keydir)        // update keyDir index.
-	db.activeDataFileOff += uint32(n) // step active file offset
+	db.keyDir.set(key, keydir)
+	db.activeDataFileOff += uint32(n)
 
 	if db.activeDataFileOff >= db.opt.maxFileBytes {
 		if err = db.archive(); err != nil {
@@ -311,15 +300,22 @@ func (db *DB) get(key []byte, quick bool) (entry *kvEntry, err error) {
 		}
 	}
 
+	// FIXED: activeFile concurrent read/write may cause read entry incorrectly.
+	db.activeLock.Lock()
+	defer db.activeLock.Unlock()
+
 	if quick {
 		entry = new(kvEntry)
-		entry.value, err = readValueOnly(fd, clue)
+		entry.value = make([]byte, clue.valueSize)
+		err = readValueOnly(fd, clue, entry.value)
 	} else {
 		entry, err = readEntryEntire(fd, clue)
 	}
 	if err != nil {
 		return nil, errors.Wrap(err, "read entry failed")
 	}
+
+	// fmt.Printf("get key=%s, value=%s, clue: %+v\n", key, entry.value, clue)
 
 	return entry, nil
 }
@@ -357,14 +353,13 @@ func readEntryEntire(dataFile afero.File, clue *keydirMemEntry) (*kvEntry, error
 	return entry, nil
 }
 
-func readValueOnly(dataFile afero.File, clue *keydirMemEntry) ([]byte, error) {
-	value := make([]byte, clue.valueSize)
+func readValueOnly(dataFile afero.File, clue *keydirMemEntry, value []byte) error {
 	n, err := dataFile.ReadAt(value, int64(clue.valueOffset))
 	if err != nil || n != int(clue.valueSize) {
-		return nil, errors.Wrap(err, "read from dataFile failed")
+		return errors.Wrap(err, "read from dataFile failed")
 	}
 
-	return value, nil
+	return nil
 }
 
 // openInactiveFile open inactive file for reading.

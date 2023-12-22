@@ -122,3 +122,48 @@ func Test_kvEntry_encodeAndDecode(t *testing.T) {
 	assert.Equal(t, int(entry.valueSize), cap(entry2.value))
 	assert.Equal(t, int(entry.valueSize), len(entry2.value))
 }
+
+func Test_estimateEntry(t *testing.T) {
+	type args struct {
+		bytes int64
+	}
+	tests := []struct {
+		name string
+		args args
+		want int
+	}{
+		{
+			name: "normal case 1",
+			args: args{
+				bytes: 100,
+			},
+			want: 4,
+		},
+		{
+			name: "normal case 2",
+			args: args{
+				bytes: 1000,
+			},
+			want: 34,
+		},
+		{
+			name: "abnormal case 1",
+			args: args{
+				bytes: 0,
+			},
+			want: 0,
+		},
+		{
+			name: "abnormal case 2",
+			args: args{
+				bytes: -1,
+			},
+			want: 0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equalf(t, tt.want, estimateEntry(tt.args.bytes), "estimateEntry(%v)", tt.args.bytes)
+		})
+	}
+}

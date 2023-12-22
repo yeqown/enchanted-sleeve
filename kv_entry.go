@@ -99,3 +99,16 @@ func decodeEntryFromHeader(header []byte) (*kvEntry, error) {
 
 	return ent, nil
 }
+
+const entrySizeAssumption = 30
+
+// estimateEntry returns the number of entries that can be stored in the given
+// number of bytes. We assume the average key size is 10 bytes and the average
+// value size is 20 bytes.
+func estimateEntry(bytes int64) int {
+	if bytes < entrySizeAssumption {
+		return 0
+	}
+
+	return int(bytes/entrySizeAssumption) + 1
+}

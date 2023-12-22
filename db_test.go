@@ -306,3 +306,61 @@ func Test_DB_Merge(t *testing.T) {
 	assert.Equal(t, uint16(5), snap.lastDataFileId)
 	assert.EqualValues(t, 6, len(db.ListKeys()))
 }
+
+func Test_DB_filesystem(t *testing.T) {
+
+	osFs := "OsFs"
+	memMapFs := "MemMapFS"
+
+	type args struct {
+		db *DB
+	}
+
+	tests := []struct {
+		name string
+		args args
+		want string
+	}{
+		{
+			name: "case 1",
+			args: args{
+				db: nil,
+			},
+			want: osFs,
+		},
+		{
+			name: "case 2",
+			args: args{
+				db: &DB{},
+			},
+			want: osFs,
+		},
+		{
+			name: "case 3",
+			args: args{
+				db: &DB{
+					opt: &options{},
+				},
+			},
+			want: osFs,
+		},
+		{
+			name: "case 4",
+			args: args{
+				db: &DB{
+					opt: &options{
+						fs: afero.NewMemMapFs(),
+					},
+				},
+			},
+			want: memMapFs,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.args.db.filesystem()
+			assert.Equal(t, tt.want, got.Name())
+		})
+	}
+}

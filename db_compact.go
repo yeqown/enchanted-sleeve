@@ -336,27 +336,31 @@ func readDataFile(fs FileSystem, filename string, fileId uint16) ([]*kvEntry, ma
 		return nil, nil, err
 	}
 
-	// TODO: determine the size of datafile, so we can allocate a buffer to read all data
+	// DONE: determine the size of datafile, so we can allocate a buffer to read all data
 	//       from datafile at once.
-	pos := int64(0)
-	entries := make([]*kvEntry, 0, 1024)
-	keydirs := make(map[string]*keydirMemEntry, 1024)
-	header := make([]byte, kvEntry_fixedBytes)
 	fi, err := fd.Stat()
 	if err != nil {
 		return nil, nil, err
 	}
 
-	for pos < fi.Size() {
+	total := fi.Size()
+	cur := int64(0)
+	n := estimateEntry(total) // estimate the number of entries.
+
+	entries := make([]*kvEntry, 0, n)
+	keydires := make(map[string]*keydirMemEntry, n)
+	header := make([]byte, kvEntry_fixedBytes)
+
+	for cur < total {
 		keydir := &keydirMemEntry{
 			fileId:      fileId,
 			valueSize:   0,           // set it later
-			entryOffset: uint32(pos), //
+			entryOffset: uint32(cur), //
 			valueOffset: 0,           // set it later
 		}
 
 		// read fixed entry header.
-		n, err2 := fd.ReadAt(header, pos)
+		n, err2 := fd.ReadAt(header, cur)
 		if err != nil || n != kvEntry_fixedBytes {
 			return nil, nil, err2
 		}
@@ -367,30 +371,34 @@ func readDataFile(fs FileSystem, filename string, fileId uint16) ([]*kvEntry, ma
 		}
 
 		// read key.
-		pos += kvEntry_fixedBytes
-		n, err2 = fd.ReadAt(entry.key, pos)
+		cur += kvEntry_fixedBytes
+		n, err2 = fd.ReadAt(entry.key, cur)
 		if err != nil || n != int(entry.keySize) {
 			return nil, nil, err2
 		}
 
 		// read value.
-		pos += int64(entry.keySize)
-		keydir.valueOffset = uint32(pos)
+		cur += int64(entry.keySize)
+		keydir.valueOffset = uint32(cur)
 		keydir.valueSize = entry.valueSize
 
-		n, err2 = fd.ReadAt(entry.value, pos)
+		n, err2 = fd.ReadAt(entry.value, cur)
 		if err != nil || n != int(entry.valueSize) {
 			return nil, nil, err2
 		}
 
+		if crc := checksum(entry); crc != entry.crc {
+			return nil, nil, ErrEntryCorrupted
+		}
+
 		entries = append(entries, entry)
-		keydirs[unsafe.String(&entry.key[0], int(entry.keySize))] = keydir
+		keydires[unsafe.String(&entry.key[0], int(entry.keySize))] = keydir
 
 		// step to next entry.
-		pos += int64(entry.valueSize)
+		cur += int64(entry.valueSize)
 	}
 
-	return entries, keydirs, nil
+	return entries, keydires, nil
 }
 
 func readHintFile(fs FileSystem, filename string) ([]*keydirFileEntry, error) {

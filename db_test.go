@@ -1,6 +1,7 @@
 package esl
 
 import (
+	"bytes"
 	"errors"
 	"math/rand"
 	"strconv"
@@ -23,6 +24,8 @@ type dbTestSuite struct {
 
 func (su *dbTestSuite) SetupSuite() {
 	var err error
+
+	rand.New(rand.NewSource(time.Now().UnixNano()))
 
 	su.prepareFileSystem()
 
@@ -144,10 +147,18 @@ func (su *dbTestSuite) Test_DB_ListKeys() {
 	su.NotContains(keys, Key(key))
 }
 
+func Test_DB(t *testing.T) {
+	suite.Run(t, new(dbTestSuite))
+}
+
 // go test -v -run ^Test_DB$ -testify.m ^Test_DB_concurrency_access$ -race ./...
-func (su *dbTestSuite) Test_DB_concurrency_access() {
+func Test_DB_concurrency_access(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	db, err := Open("/tmp/esl/", WithFileSystem(fs))
+	require.NoError(t, err)
+
 	nRoutine := 10
-	nCountKey := 10
+	nCountKey := 100
 
 	keyFunc := func(routineIdx, keyIdx int) []byte {
 		return []byte(strconv.Itoa(routineIdx) + "_Test_DB_concurrency_access_" + strconv.Itoa(keyIdx))
@@ -156,6 +167,9 @@ func (su *dbTestSuite) Test_DB_concurrency_access() {
 		return []byte("value" + strconv.Itoa(keyIdx))
 	}
 
+	// There are 10 routines, each routine put 100 key-value pairs into db
+	// in parallel, so there are 1000 key-value pairs in db.
+	// And there is another 10 routines to get key-value pairs from db in parallel.
 	wg := sync.WaitGroup{}
 	for i := 0; i < nRoutine; i++ {
 		wg.Add(1)
@@ -163,34 +177,62 @@ func (su *dbTestSuite) Test_DB_concurrency_access() {
 			defer wg.Done()
 
 			for j := 0; j < nCountKey; j++ {
-				err := su.db.Put(keyFunc(routineIdx, j), valueFunc(routineIdx, j))
-				su.NoError(err)
+				err = db.Put(keyFunc(routineIdx, j), valueFunc(routineIdx, j))
+				assert.NoError(t, err)
 			}
 		}(i)
 	}
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		rand.New(rand.NewSource(time.Now().UnixNano()))
-		for j := 0; j < nCountKey; j++ {
-			time.Sleep(time.Microsecond)
+	for i := 0; i < nRoutine; i++ {
+		wg.Add(1)
+		go func(routineIdx int) {
+			defer wg.Done()
 
-			routineIdx := rand.Intn(nRoutine)
-			key := keyFunc(routineIdx, j)
-			value, err := su.db.Get(key)
-			if errors.Is(err, ErrKeyNotFound) {
-				continue
+			for j := 0; j < nCountKey; j++ {
+				time.Sleep(time.Microsecond)
+				key := keyFunc(routineIdx, j)
+				value, err := db.Get(key)
+				if errors.Is(err, ErrKeyNotFound) {
+					continue
+				}
+
+				want := valueFunc(routineIdx, j)
+				assert.Truef(t, bytes.Equal(want, value), "key: %s, want(%s) != got(%s)", key, want, value)
 			}
-			su.Equal([]byte("value"+strconv.Itoa(j)), value)
-		}
-	}()
+		}(i)
+	}
 
 	wg.Wait()
 }
 
-func Test_DB(t *testing.T) {
-	suite.Run(t, new(dbTestSuite))
+func Test_DB_MultiWriteGet(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	db, err := Open("/tmp/esl/", WithFileSystem(fs))
+	require.NoError(t, err)
+
+	keyFunc := func(i int) []byte {
+		return []byte("Test_DB_MultiWriteGet_" + strconv.Itoa(i))
+	}
+	valueFunc := func(i int) []byte {
+		return []byte("value" + strconv.Itoa(i))
+	}
+
+	// 1000 key-value pairs
+	for i := 0; i < 1000; i++ {
+		key := keyFunc(i)
+		value := valueFunc(i)
+		err = db.Put(key, value)
+		require.NoError(t, err)
+	}
+
+	// read 1000 key-value pairs
+	for i := 0; i < 1000; i++ {
+		key := keyFunc(i)
+		got, err := db.Get(key)
+		require.NoError(t, err)
+		expected := valueFunc(i)
+		assert.Equal(t, expected, got)
+	}
 }
 
 func Test_DB_Sync(t *testing.T) {

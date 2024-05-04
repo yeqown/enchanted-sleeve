@@ -23,6 +23,8 @@ func Benchmark_DB_Put(b *testing.B) {
 	}()
 
 	db, err := Open(benchmarkDataPath)
+	require.NoError(b, err)
+	require.NotNil(b, db)
 
 	keyFunc := func(i int) []byte {
 		return []byte("key" + strconv.Itoa(i))

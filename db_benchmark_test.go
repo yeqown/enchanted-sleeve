@@ -1,12 +1,13 @@
 package esl
 
 import (
-	"testing"
-	"os"
-	"github.com/stretchr/testify/require"
-	"strconv"
 	"math/rand"
+	"os"
+	"strconv"
+	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 var (

@@ -387,7 +387,7 @@ func readDataFile(fs FileSystem, filename string, fileId uint16) ([]*kvEntry, ma
 			return nil, nil, err2
 		}
 
-		if crc := checksum(entry); crc != entry.crc {
+		if !entry.validateChecksum() {
 			return nil, nil, ErrEntryCorrupted
 		}
 

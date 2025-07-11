@@ -26,7 +26,6 @@ func randomKVEntries(n int) map[string]*kvEntry {
 			key:         key,
 			value:       value,
 		}
-		ent.fillcrc()
 		entries[string(key)] = ent
 	}
 	return entries

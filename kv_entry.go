@@ -24,7 +24,9 @@ type kvEntry struct {
 	value       []byte
 }
 
-func checksum(ent *kvEntry) uint32 {
+// _checksumEntry avoid using this function since it allocates a new slice
+// to store the data. and it is not efficient.
+func _checksumEntry(ent *kvEntry) uint32 {
 	data := make([]byte, kvEntry_fixedBytes-kvEntry_tsTimestampOff+ent.keySize+ent.valueSize)
 	pos := 0
 	binary.BigEndian.PutUint32(data, ent.tsTimestamp)
@@ -40,22 +42,40 @@ func checksum(ent *kvEntry) uint32 {
 	return crc32.ChecksumIEEE(data)
 }
 
-func (ent *kvEntry) fillcrc() {
+func _checksumRaw(data []byte) uint32 {
+	return crc32.ChecksumIEEE(data)
+}
+
+// func (ent *kvEntry) fillcrc() {
+// 	if ent == nil {
+// 		panic("fillcrc on nil ent")
+// 	}
+//
+// 	ent.crc = checksum(ent)
+// }
+
+func (ent *kvEntry) validateChecksum() bool {
 	if ent == nil {
-		panic("fillcrc on nil ent")
+		return false
 	}
 
-	ent.crc = checksum(ent)
+	return ent.crc == _checksumEntry(ent)
 }
 
 func (ent *kvEntry) bytes() []byte {
 	data := make([]byte, len(ent.key)+len(ent.value)+kvEntry_fixedBytes)
-	binary.BigEndian.PutUint32(data, ent.crc)
+
+	// binary.BigEndian.PutUint32(data, ent.crc)
+
 	binary.BigEndian.PutUint32(data[kvEntry_tsTimestampOff:], ent.tsTimestamp)
 	binary.BigEndian.PutUint16(data[kvEntry_keySizeOff:], ent.keySize)
 	binary.BigEndian.PutUint16(data[kvEntry_valueSizeOff:], ent.valueSize)
 	copy(data[kvEntry_keyOff:], ent.key)
 	copy(data[kvEntry_keyOff+ent.keySize:], ent.value)
+
+	// fill crc at last.
+	ent.crc = _checksumRaw(data[kvEntry_tsTimestampOff:])
+	binary.BigEndian.PutUint32(data, ent.crc)
 
 	return data
 }
@@ -75,7 +95,7 @@ func newEntry(key, value []byte) *kvEntry {
 		value:       value,
 	}
 
-	ent.fillcrc()
+	// ent.fillcrc()
 
 	return ent
 }

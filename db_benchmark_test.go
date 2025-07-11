@@ -11,9 +11,13 @@ import (
 )
 
 var (
-	benchmarkDataPath = "./benchmark-data/esl"
+	benchmarkDataPath = "./benchmark/data/esl"
 )
 
+// Running benchmark to generate cpu and memory profile
+// go test -bench=Benchmark_DB_Put -benchmem -cpuprofile ./benchmark/cpu.out -memprofile ./benchmark/mem.out
+// go tool pprof -http=:8080 ./benchmark/cpu.out
+// go tool pprof -http=:8080 ./benchmark/mem.out
 func Benchmark_DB_Put(b *testing.B) {
 	b.StopTimer()
 	err := os.MkdirAll(benchmarkDataPath, 0744)
@@ -40,6 +44,10 @@ func Benchmark_DB_Put(b *testing.B) {
 	}
 }
 
+// Running benchmark to generate cpu and memory profile
+// go test -bench=Benchmark_DB_Get -benchmem -cpuprofile./benchmark/cpu.out -memprofile./benchmark/mem.out
+// go tool pprof -http=:8080 ./benchmark/cpu.out
+// go tool pprof -http=:8080 ./benchmark/mem.out
 func Benchmark_DB_Get(b *testing.B) {
 	rand.New(rand.NewSource(time.Now().UnixNano()))
 

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unsafe"
 
 	"github.com/pkg/errors"
 	"github.com/spf13/afero"
@@ -150,4 +151,13 @@ func backupFile(fs FileSystem, filename string) (restoreFn func() error, cleanFn
 	}
 
 	return restoreFn, cleanFn, nil
+}
+
+// unsafeString convert []byte to string without copy.
+//
+// It is not safe to use the returned string after the input slice is modified.
+//
+// BE CAREFUL!!!
+func unsafeString(s []byte) string {
+	return *(*string)(unsafe.Pointer(&s))
 }

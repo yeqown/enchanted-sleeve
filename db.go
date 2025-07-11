@@ -214,6 +214,7 @@ func (db *DB) Put(key, value []byte) error {
 	}
 
 	entry := newEntry(key, value)
+	defer releaseEntry(entry)
 
 	return db.write(entry)
 }
@@ -226,6 +227,7 @@ func (db *DB) Delete(key []byte) error {
 	}
 
 	entry := newEntry(key, nil)
+	defer releaseEntry(entry)
 
 	return db.write(entry)
 }

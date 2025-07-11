@@ -3,6 +3,7 @@ package esl
 import (
 	"encoding/binary"
 	"hash/crc32"
+	"sync"
 	"time"
 )
 
@@ -85,19 +86,43 @@ func (ent *kvEntry) tombstone() bool {
 	return ent.value == nil
 }
 
-func newEntry(key, value []byte) *kvEntry {
-	ent := &kvEntry{
-		crc:         0,
-		tsTimestamp: uint32(time.Now().Unix()),
-		keySize:     uint16(len(key)),
-		valueSize:   uint16(len(value)),
-		key:         key,
-		value:       value,
+var (
+	keyEntryPool = sync.Pool{
+		New: func() interface{} {
+			return &kvEntry{
+				crc:         0,
+				tsTimestamp: uint32(time.Now().Unix()),
+				keySize:     0,
+				valueSize:   0,
+				key:         nil,
+				value:       nil,
+			}
+		},
 	}
+)
 
-	// ent.fillcrc()
+func newEntry(key, value []byte) *kvEntry {
+	ent := keyEntryPool.Get().(*kvEntry)
+
+	ent.crc = 0
+	ent.tsTimestamp = uint32(time.Now().Unix())
+	ent.keySize = uint16(len(key))
+	ent.valueSize = uint16(len(value))
+	ent.key = key
+	ent.value = value
 
 	return ent
+}
+
+func releaseEntry(ent *kvEntry) {
+	ent.crc = 0
+	ent.tsTimestamp = 0
+	ent.keySize = 0
+	ent.valueSize = 0
+	ent.key = nil
+	ent.value = nil
+
+	keyEntryPool.Put(ent)
 }
 
 func decodeEntryFromHeader(header []byte) (*kvEntry, error) {

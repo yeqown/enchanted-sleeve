@@ -133,7 +133,7 @@ func writeEntryIntoFile(fs FileSystem, fileId uint16, filename string, entry *kv
 	}
 	pos := fi.Size()
 
-	_, err = file.Write(entry.bytes())
+	_, err = entry.write(file)
 	keydir = &keydirMemEntry{
 		fileId:      fileId,
 		valueSize:   entry.valueSize,

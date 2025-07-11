@@ -228,7 +228,7 @@ func writeMergeFileAndHint(
 		n      int
 	)
 	for _, entry := range aliveEntries {
-		if n, err = dataFile.Write(entry.bytes()); err != nil {
+		if n, err = entry.write(dataFile); err != nil {
 			return errors.Wrap(err, "writeMergeFileAndHint.writeDataFile")
 		}
 		valueOff = entryOff + kvEntry_fixedBytes + uint32(entry.keySize)

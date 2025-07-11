@@ -3,8 +3,11 @@ package esl
 import (
 	"encoding/binary"
 	"hash/crc32"
+	"io"
 	"sync"
 	"time"
+
+	"github.com/yeqown/enchanted-sleeve/byteslice"
 )
 
 const (
@@ -63,8 +66,27 @@ func (ent *kvEntry) validateChecksum() bool {
 	return ent.crc == _checksumEntry(ent)
 }
 
-func (ent *kvEntry) bytes() []byte {
-	data := make([]byte, len(ent.key)+len(ent.value)+kvEntry_fixedBytes)
+func (ent *kvEntry) write(w io.Writer) (int, error) {
+	n := len(ent.key) + len(ent.value) + kvEntry_fixedBytes
+	buf := byteslice.Get(n)
+	defer byteslice.Put(buf)
+
+	ent.encode(buf)
+
+	return w.Write(buf)
+}
+
+func (ent *kvEntry) encode(data []byte) []byte {
+	if data == nil {
+		data = make([]byte, len(ent.key)+len(ent.value)+kvEntry_fixedBytes)
+	}
+
+	n := len(ent.key) + len(ent.value) + kvEntry_fixedBytes
+	if cap(data) < n {
+		panic("not enough capacity")
+	}
+
+	// data := make([]byte, n)
 
 	// binary.BigEndian.PutUint32(data, ent.crc)
 

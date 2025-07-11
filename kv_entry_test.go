@@ -65,7 +65,7 @@ func Test_kvEntry_bytes(t *testing.T) {
 		value:       []byte("world"),
 	}
 
-	got := entry.bytes()
+	got := entry.encode(nil)
 	want := []byte{
 		0xef,
 		0x9e,
@@ -103,7 +103,7 @@ func Test_kvEntry_encodeAndDecode(t *testing.T) {
 	entry := newEntry(key, value)
 	assert.Equal(t, keySize, entry.keySize)
 	assert.Equal(t, valueSize, entry.valueSize)
-	encoded := entry.bytes()
+	encoded := entry.encode(nil)
 
 	require.Greater(t, len(encoded), kvEntry_fixedBytes)
 	assert.Equal(t, int(kvEntry_fixedBytes+keySize+valueSize), len(encoded))

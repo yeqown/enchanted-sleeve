@@ -254,8 +254,7 @@ func (db *DB) write(e *kvEntry) error {
 	}
 
 	// fmt.Printf("entry(key=%s, value=%s) keydir: %+v\n", key, e.value, keydir)
-
-	n, err := db.activeDataFile.Write(e.bytes())
+	n, err := e.write(db.activeDataFile)
 	if err != nil {
 		return errors.Wrap(err, "db.Put could not write to file")
 	}

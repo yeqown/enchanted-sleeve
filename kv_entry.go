@@ -3,7 +3,11 @@ package esl
 import (
 	"encoding/binary"
 	"hash/crc32"
+	"io"
+	"sync"
 	"time"
+
+	"github.com/yeqown/enchanted-sleeve/byteslice"
 )
 
 const (
@@ -24,7 +28,9 @@ type kvEntry struct {
 	value       []byte
 }
 
-func checksum(ent *kvEntry) uint32 {
+// _checksumEntry avoid using this function since it allocates a new slice
+// to store the data. and it is not efficient.
+func _checksumEntry(ent *kvEntry) uint32 {
 	data := make([]byte, kvEntry_fixedBytes-kvEntry_tsTimestampOff+ent.keySize+ent.valueSize)
 	pos := 0
 	binary.BigEndian.PutUint32(data, ent.tsTimestamp)
@@ -40,22 +46,59 @@ func checksum(ent *kvEntry) uint32 {
 	return crc32.ChecksumIEEE(data)
 }
 
-func (ent *kvEntry) fillcrc() {
-	if ent == nil {
-		panic("fillcrc on nil ent")
-	}
-
-	ent.crc = checksum(ent)
+func _checksumRaw(data []byte) uint32 {
+	return crc32.ChecksumIEEE(data)
 }
 
-func (ent *kvEntry) bytes() []byte {
-	data := make([]byte, len(ent.key)+len(ent.value)+kvEntry_fixedBytes)
-	binary.BigEndian.PutUint32(data, ent.crc)
+// func (ent *kvEntry) fillcrc() {
+// 	if ent == nil {
+// 		panic("fillcrc on nil ent")
+// 	}
+//
+// 	ent.crc = checksum(ent)
+// }
+
+func (ent *kvEntry) validateChecksum() bool {
+	if ent == nil {
+		return false
+	}
+
+	return ent.crc == _checksumEntry(ent)
+}
+
+func (ent *kvEntry) write(w io.Writer) (int, error) {
+	n := len(ent.key) + len(ent.value) + kvEntry_fixedBytes
+	buf := byteslice.Get(n)
+	defer byteslice.Put(buf)
+
+	ent.encode(buf)
+
+	return w.Write(buf)
+}
+
+func (ent *kvEntry) encode(data []byte) []byte {
+	if data == nil {
+		data = make([]byte, len(ent.key)+len(ent.value)+kvEntry_fixedBytes)
+	}
+
+	n := len(ent.key) + len(ent.value) + kvEntry_fixedBytes
+	if cap(data) < n {
+		panic("not enough capacity")
+	}
+
+	// data := make([]byte, n)
+
+	// binary.BigEndian.PutUint32(data, ent.crc)
+
 	binary.BigEndian.PutUint32(data[kvEntry_tsTimestampOff:], ent.tsTimestamp)
 	binary.BigEndian.PutUint16(data[kvEntry_keySizeOff:], ent.keySize)
 	binary.BigEndian.PutUint16(data[kvEntry_valueSizeOff:], ent.valueSize)
 	copy(data[kvEntry_keyOff:], ent.key)
 	copy(data[kvEntry_keyOff+ent.keySize:], ent.value)
+
+	// fill crc at last.
+	ent.crc = _checksumRaw(data[kvEntry_tsTimestampOff:])
+	binary.BigEndian.PutUint32(data, ent.crc)
 
 	return data
 }
@@ -65,19 +108,43 @@ func (ent *kvEntry) tombstone() bool {
 	return ent.value == nil
 }
 
-func newEntry(key, value []byte) *kvEntry {
-	ent := &kvEntry{
-		crc:         0,
-		tsTimestamp: uint32(time.Now().Unix()),
-		keySize:     uint16(len(key)),
-		valueSize:   uint16(len(value)),
-		key:         key,
-		value:       value,
+var (
+	keyEntryPool = sync.Pool{
+		New: func() interface{} {
+			return &kvEntry{
+				crc:         0,
+				tsTimestamp: uint32(time.Now().Unix()),
+				keySize:     0,
+				valueSize:   0,
+				key:         nil,
+				value:       nil,
+			}
+		},
 	}
+)
 
-	ent.fillcrc()
+func newEntry(key, value []byte) *kvEntry {
+	ent := keyEntryPool.Get().(*kvEntry)
+
+	ent.crc = 0
+	ent.tsTimestamp = uint32(time.Now().Unix())
+	ent.keySize = uint16(len(key))
+	ent.valueSize = uint16(len(value))
+	ent.key = key
+	ent.value = value
 
 	return ent
+}
+
+func releaseEntry(ent *kvEntry) {
+	ent.crc = 0
+	ent.tsTimestamp = 0
+	ent.keySize = 0
+	ent.valueSize = 0
+	ent.key = nil
+	ent.value = nil
+
+	keyEntryPool.Put(ent)
 }
 
 func decodeEntryFromHeader(header []byte) (*kvEntry, error) {

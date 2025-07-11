@@ -228,7 +228,7 @@ func writeMergeFileAndHint(
 		n      int
 	)
 	for _, entry := range aliveEntries {
-		if n, err = dataFile.Write(entry.bytes()); err != nil {
+		if n, err = entry.write(dataFile); err != nil {
 			return errors.Wrap(err, "writeMergeFileAndHint.writeDataFile")
 		}
 		valueOff = entryOff + kvEntry_fixedBytes + uint32(entry.keySize)
@@ -387,7 +387,7 @@ func readDataFile(fs FileSystem, filename string, fileId uint16) ([]*kvEntry, ma
 			return nil, nil, err2
 		}
 
-		if crc := checksum(entry); crc != entry.crc {
+		if !entry.validateChecksum() {
 			return nil, nil, ErrEntryCorrupted
 		}
 

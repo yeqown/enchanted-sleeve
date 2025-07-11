@@ -73,7 +73,7 @@ func (kd *keydirMemTable) get(key []byte) *keydirMemEntry {
 	kd.lock.RLock()
 	defer kd.lock.RUnlock()
 
-	ent, ok := kd.indexes[string(key)]
+	ent, ok := kd.indexes[unsafeString(key)]
 	if ok {
 		return ent
 	}
@@ -85,7 +85,7 @@ func (kd *keydirMemTable) set(key []byte, ent *keydirMemEntry) {
 	kd.lock.Lock()
 	defer kd.lock.Unlock()
 
-	kd.indexes[string(key)] = ent
+	kd.indexes[unsafeString(key)] = ent
 }
 
 // func (kd *keydirMemTable) del(key []byte) {

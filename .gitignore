@@ -18,3 +18,7 @@ testdata
 .idea
 
 ./esl-ctl
+./benchmark/cpu.out
+./benchmark/memory.out
+
+esl-ctl

@@ -33,14 +33,29 @@ func Test_checksum(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := checksum(tt.args.ent); got != tt.want {
+			if got := _checksumEntry(tt.args.ent); got != tt.want {
 				t.Errorf("checksum() = %v, want %v", got, tt.want)
 			}
 		})
 	}
 }
 
-func Test_kvEntry_fillcrc(t *testing.T) {
+// func Test_kvEntry_fillcrc(t *testing.T) {
+// 	entry := &kvEntry{
+// 		crc:         0,
+// 		tsTimestamp: 1702878103,
+// 		keySize:     5,
+// 		valueSize:   5,
+// 		key:         []byte("hello"),
+// 		value:       []byte("world"),
+// 	}
+//
+// 	// entry.fillcrc()
+//
+// 	assert.Equal(t, uint32(4020150805), entry.crc)
+// }
+
+func Test_kvEntry_bytes(t *testing.T) {
 	entry := &kvEntry{
 		crc:         0,
 		tsTimestamp: 1702878103,
@@ -50,22 +65,7 @@ func Test_kvEntry_fillcrc(t *testing.T) {
 		value:       []byte("world"),
 	}
 
-	entry.fillcrc()
-
-	assert.Equal(t, uint32(4020150805), entry.crc)
-}
-
-func Test_kvEntry_bytes(t *testing.T) {
-	entry := &kvEntry{
-		crc:         4020150805,
-		tsTimestamp: 1702878103,
-		keySize:     5,
-		valueSize:   5,
-		key:         []byte("hello"),
-		value:       []byte("world"),
-	}
-
-	got := entry.bytes()
+	got := entry.encode(nil)
 	want := []byte{
 		0xef,
 		0x9e,
@@ -103,7 +103,7 @@ func Test_kvEntry_encodeAndDecode(t *testing.T) {
 	entry := newEntry(key, value)
 	assert.Equal(t, keySize, entry.keySize)
 	assert.Equal(t, valueSize, entry.valueSize)
-	encoded := entry.bytes()
+	encoded := entry.encode(nil)
 
 	require.Greater(t, len(encoded), kvEntry_fixedBytes)
 	assert.Equal(t, int(kvEntry_fixedBytes+keySize+valueSize), len(encoded))

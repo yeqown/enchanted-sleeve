@@ -214,8 +214,9 @@ func (db *DB) Put(key, value []byte) error {
 	}
 
 	entry := newEntry(key, value)
+	defer releaseEntry(entry)
 
-	return db.write(key, entry)
+	return db.write(entry)
 }
 
 // Delete removes the key from the DB. Note that the key is not removed from the DB,
@@ -226,13 +227,14 @@ func (db *DB) Delete(key []byte) error {
 	}
 
 	entry := newEntry(key, nil)
+	defer releaseEntry(entry)
 
-	return db.write(key, entry)
+	return db.write(entry)
 }
 
 // write to activate file and update keyDir index.
 // TODO: use channel to write to active file in sequence. also can set different channel for diff priority write.
-func (db *DB) write(key []byte, e *kvEntry) error {
+func (db *DB) write(e *kvEntry) error {
 	for db.inArchived.Load() {
 		// spin to wait for archiving finish
 		time.Sleep(time.Millisecond)
@@ -252,13 +254,12 @@ func (db *DB) write(key []byte, e *kvEntry) error {
 	}
 
 	// fmt.Printf("entry(key=%s, value=%s) keydir: %+v\n", key, e.value, keydir)
-
-	n, err := db.activeDataFile.Write(e.bytes())
+	n, err := e.write(db.activeDataFile)
 	if err != nil {
 		return errors.Wrap(err, "db.Put could not write to file")
 	}
 
-	db.keyDir.set(key, keydir)
+	db.keyDir.set(e.key, keydir)
 	db.activeDataFileOff += uint32(n)
 
 	if db.activeDataFileOff >= db.opt.maxFileBytes {
@@ -346,7 +347,7 @@ func readEntryEntire(dataFile afero.File, clue *keydirMemEntry) (*kvEntry, error
 	}
 
 	// DONE: check entry crc to ensure the entry is not corrupted.
-	if entry.crc != checksum(entry) {
+	if !entry.validateChecksum() {
 		return nil, ErrEntryCorrupted
 	}
 

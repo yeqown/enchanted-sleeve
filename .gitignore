@@ -20,3 +20,5 @@ testdata
 ./esl-ctl
 ./benchmark/cpu.out
 ./benchmark/memory.out
+
+esl-ctl

@@ -27,10 +27,10 @@ type options struct {
 	// When the number of files exceeds this value, the compaction process will be triggered.
 	compactThreshold uint32
 	// The interval to check whether the compaction process should be triggered.
-	// default value is 1 minute.
+	// The default value is 1 minute.
 	compactInterval time.Duration
 
-	// The file system to access. The default file system is implemented by os package.
+	// The file system to access. Os package implements the default file system.
 	fs FileSystem
 }
 

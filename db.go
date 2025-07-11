@@ -24,8 +24,8 @@ const (
 // the log file in the order they are written. The log file is structured as
 // follows:
 //
-// |  crc  |  tstamp  |  key_sz  |  value_sz  |  key  |  value  |
-// |  crc  |  tstamp  |  key_sz  |  value_sz  |  key  |  value  |
+// | crc | tstamp | key_sz | value_sz | key | value |
+// | crc | tstamp | key_sz | value_sz | key | value |
 //
 // Since it's append-only, so modification and deletion would also append a new
 // entry to overwrite old value.
@@ -45,9 +45,9 @@ type DB struct {
 	activeDataFileOff uint32
 
 	// // The hint file for activeDataFile to store the keydir index of activeDataFile,
-	// // so that we can quickly restore keyDir from the hint file while db restart or recover from crash.
+	// // so that we can quickly restore keyDir from the hint file while db restart or recover from a crash.
 	// activeHintFile afero.File
-	// activeHintOff  uint32
+	//  activeHintOff uint32
 
 	// path is the directory where the DB is stored.
 	path string
@@ -152,9 +152,9 @@ func (db *DB) filesystem() FileSystem {
 	return db.opt.fs
 }
 
-// openDataFile open a data file for writing. If the file is not exist, it
+// openDataFile open a data file for writing. If the file does not exist, it
 // creates a new active file with given fileId which should be formed as 10 digits,
-// for example: 0000000001.esld
+// for example, 0000000001.esld
 func openDataFile(fs FileSystem, path string, fileId uint16) (afero.File, uint32, error) {
 	dataFName := dataFilename(path, fileId)
 
@@ -218,7 +218,7 @@ func (db *DB) Put(key, value []byte) error {
 	return db.write(key, entry)
 }
 
-// Delete removes the key from the DB. Note that the key is not actually removed from the DB,
+// Delete removes the key from the DB. Note that the key is not removed from the DB,
 // but marked as deleted, and the key will be removed from the DB when the DB is compacted.
 func (db *DB) Delete(key []byte) error {
 	if dir := db.keyDir.get(key); dir == nil || dir.valueSize == 0 {
@@ -388,7 +388,7 @@ func (db *DB) ListKeys() []Key {
 	return keys
 }
 
-// Merge compacts the DB which is used by developer to reduce disk usage manually.
+// Merge compacts the DB which developer uses to reduce disk usage manually.
 func (db *DB) Merge() error {
 	select {
 	case db.compactCommand <- struct{}{}:
@@ -397,7 +397,7 @@ func (db *DB) Merge() error {
 	return nil
 }
 
-// Sync force any writes to sync to disk
+// Sync forces any writings to sync to disk
 func (db *DB) Sync() {
 	if db.inArchived.Load() {
 		return

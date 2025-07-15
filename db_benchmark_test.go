@@ -45,7 +45,7 @@ func Benchmark_DB_Put(b *testing.B) {
 }
 
 // Running benchmark to generate cpu and memory profile
-// go test -bench=Benchmark_DB_Get -benchmem -cpuprofile./benchmark/cpu.out -memprofile./benchmark/mem.out
+// go test -bench=Benchmark_DB_Get -benchmem -cpuprofile ./benchmark/cpu.out -memprofile ./benchmark/mem.out
 // go tool pprof -http=:8080 ./benchmark/cpu.out
 // go tool pprof -http=:8080 ./benchmark/mem.out
 func Benchmark_DB_Get(b *testing.B) {

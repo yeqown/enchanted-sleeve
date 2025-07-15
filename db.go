@@ -276,6 +276,7 @@ func (db *DB) Get(key []byte) (value []byte, err error) {
 	if err != nil {
 		return nil, err
 	}
+	defer releaseEntry(entry)
 
 	return entry.value, nil
 }
@@ -306,8 +307,7 @@ func (db *DB) get(key []byte, quick bool) (entry *kvEntry, err error) {
 	defer db.activeLock.Unlock()
 
 	if quick {
-		entry = new(kvEntry)
-		entry.value = make([]byte, clue.valueSize)
+		entry = newEntry(key, make([]byte, clue.valueSize))
 		err = readValueOnly(fd, clue, entry.value)
 	} else {
 		entry, err = readEntryEntire(fd, clue)
